@@ -9,8 +9,13 @@ portar el lector, portamos el **runtime de fuentes** a la web.
 
 ## Estado
 
-📄 **Spec primero.** El diseño vive en [SPEC.md](SPEC.md) (v0.1, 2026-10-14).
-Todavía no hay código de aplicación.
+📄 **Spec primero, spike ya corrido.** El diseño vive en [SPEC.md](SPEC.md)
+(v0.1, 2026-10-14). La **Fase 0 está completa**: un host mínimo en Node
+ejecutó el `.aix` real de MangaDex contra su API — buscar, detalle con
+capítulos y lista de páginas, todo decodificado — y el ADR de red síncrona
+quedó aceptado. Detalle en [spike/FINDINGS.md](spike/FINDINGS.md) y
+[docs/adr/0001-net-sync.md](docs/adr/0001-net-sync.md). Lo siguiente es la
+Fase 1: el host en un Web Worker dentro de la PWA.
 
 ## Fuentes de aceptación
 
@@ -42,7 +47,7 @@ escribir el host completo.
 
 | Fase | Qué |
 |---|---|
-| 0 | Spike ABI: cargar MangaDex `.aix`, búsqueda con red simulada, ADR de red síncrona |
+| 0 ✅ | Spike ABI: `.aix` real contra API real (buscar → capítulos → páginas) + ADR de red síncrona |
 | 1 | MVP MangaDex de principio a fin (instalar → buscar → leer) |
 | 2 | Weeb Central: módulo `html` completo |
 | 3 | Biblioteca, descargas offline, exportar CBZ |

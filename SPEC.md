@@ -100,11 +100,18 @@ Un `.aix` es un ZIP con rutas con `/` (forward slashes obligatorios):
 ```
 Payload/main.wasm     # la fuente compilada (wasm32-unknown-unknown)
 Payload/icon.png      # icono instalado (si falta, placeholder)
-res/source.json       # manifiesto: info.id, info.name, info.version, info.url,
+Payload/source.json   # manifiesto: info.id, info.name, info.version, info.url,
                       #   info.languages, info.contentRating; listings y config opcionales
-res/filters.json      # filtros de búsqueda (opcional)
-res/settings.json     # definiciones de ajustes de la fuente (opcional)
+Payload/filters.json  # filtros de búsqueda (opcional)
+Payload/settings.json # definiciones de ajustes de la fuente (opcional)
 ```
+
+> **Errata verificada en Fase 0 (2026-10-15)** contra los paquetes reales del
+> catálogo comunitario (MangaDex v14, Weeb Central v8): TODO vive dentro de
+> `Payload/` — no existe carpeta `res/` en los paquetes actuales, aunque
+> documentación de terceros la mencione. La instalación debe aceptar ambas
+> rutas (`Payload/` preferente, `res/` como respaldo), pero la canónica es
+> `Payload/`.
 
 La instalación valida: ZIP íntegro, `main.wasm` presente y compilable,
 `source.json` válido contra el esquema de aidoku-rs, e icono si existe.
@@ -178,6 +185,14 @@ La decisión y su justificación quedan en un ADR (`docs/adr/0001-net-sync.md`)
 antes de escribir el host completo. **Dispositivo objetivo principal influye
 directamente en esta elección** (ver §11).
 
+> **Resuelto en Fase 0 (2026-10-15):** detección en runtime — **JSPI**
+> cuando el navegador lo trae y **Asyncify** como respaldo; la ruta
+> SAB/`Atomics.wait` quedó descartada como mecanismo por defecto porque
+> GitHub Pages no puede emitir las cabeceras COOP/COEP que exige. Ver
+> ADR-0001 y `spike/FINDINGS.md`. Nota: el spike demostró la semántica con
+> HTTP bloqueante en Node; el transporte de navegador se construye en
+> Fase 1 sobre esta decisión.
+
 ### 5.5 Codec postcard
 
 Los payloads van en **postcard** (formato binario de serde: varints, strings
@@ -246,7 +261,7 @@ app nativa).
 
 | Fase | Entregable | Criterio de salida |
 |---|---|---|
-| **0. Spike ABI** | Host mínimo en Worker que carga el `.aix` de MangaDex, llama `start` y `get_search_manga_list` con red simulada (fixtures HTTP grabados); ADR de §5.4. | Búsqueda simulada devuelve `MangaPageResult` decodificado correctamente. |
+| **0. Spike ABI** ✅ (2026-10-15) | Host mínimo (Node) que carga el `.aix` de MangaDex y corre la cadena completa **contra la API real** (superó el criterio original, que pedía red simulada): buscar → detalle+capítulos → lista de páginas, todo decodificado byte-exacto; ADR-0001 escrito. Ver `spike/FINDINGS.md`. | ✅ Búsqueda, update (929 caps. de One Piece) y páginas (51 de Yotsuba, imagen HTTP 200) verificados. |
 | **1. MVP MangaDex** | Source Manager + proxy + host + lector mínimo, MangaDex real de principio a fin. | Flujo §2.1 completo con MangaDex. |
 | **2. Weeb Central** | Módulo `html` completo + ajustes del proxy para scraping. | Flujo §2.1 completo con Weeb Central, sin código específico para ella. |
 | **3. Biblioteca y offline** | Descargas a OPFS, progreso, exportar CBZ, actualización de fuentes desde la lista. | Leer offline y actualizar una fuente sin perder biblioteca. |
