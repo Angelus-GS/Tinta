@@ -77,3 +77,67 @@ está en `docs/adr/0001-net-sync.md`.
 - `get_home`, `get_listings`, `get_alternate_covers`, `get_image_request`,
   `handle_deep_link`: firmas auditadas, aún no ejercitadas.
 - Ejecutar el host en un navegador real (Worker) → Fase 1.
+
+---
+
+# Fase 2 — Hallazgos del módulo `html` (2026-10-16)
+
+**Resultado:** Weeb Central v8 corre el flujo completo sin tocar su `.aix`:
+búsqueda “One Piece” → 5 resultados; detalle con autor, tags, estado y
+**1196 capítulos**; capítulo con **17 páginas**. Verificado en Node y en
+Chromium real (JSPI **y** respaldo XHR síncrono), siempre a través del
+proxy desplegado. El motor vive en `app/lib/html.js` (parser HTML5 +
+selectores CSS en JS puro, sin DOM) e implementa las 8 funciones `html`
+que la fuente importa (`select`, `select_first`, `size`, `first`, `last`,
+`get`, `attr`, `text`) más `net.html`, con los códigos de error del
+test-runner (-1/-2/-4/-5). La semántica se tomó de
+`crates/test-runner/src/imports/html.rs` y `src/libs/html.rs` de aidoku-rs
+(copias en `spike/aidoku-rs-ref/html.rs` y `libs-html.rs`).
+
+## Tres minas que la Fase 1 no había pisado
+
+1. **`std.read_buffer` de un item String es UTF-8 CRUDO, no postcard.**
+   El host de Fases 0/1 devolvía las cadenas `string` con el prefijo de
+   longitud postcard (`encString`). MangaDex nunca lo notó porque no lee
+   cadenas del host en sus flujos de aceptación; Weeb Central sí:
+   `attr("abs:href")` llegaba como `")https://weebcentral.com/…"`,
+   `strip_prefix` fallaba en silencio y la búsqueda daba **0 resultados
+   sin error**. La referencia (`libs/store.rs::as_encoded`) es tajante:
+   `StoreItem::String → s.as_bytes()`. Corregido en `app/worker-src.js`.
+2. **`text()` normaliza el whitespace** (semántica SwiftSoup/jsoup que el
+   SDK documenta: “normalized, combined text”), aunque el test-runner en
+   Rust solo concatene y recorte. Las fuentes se escriben contra la
+   documentación: Weeb Central espera `"Official One Piece"` en una línea
+   para recortar el prefijo `Official `; con la concatenación cruda el
+   título salía con saltos de línea y el recorte no aplicaba. El motor
+   implementa la normalización (y `:contains()` insensible a mayúsculas
+   sobre ese texto, también documentado).
+3. **El proxy y Cloudflare, en dos actos.** (a) El UA por defecto del
+   proxy (el de Aidoku) lo desafía Cloudflare al salir desde un Worker:
+   403 en `weebcentral.com` con cualquier otro header correcto; con UA de
+   navegador pasa (también desde el iPhone, cuyo Safari trae UA válido).
+   El proxy ahora usa por defecto un UA de navegador. (b) Nada de
+   cabeceras personalizadas desde el host: una sola (`x-tinta-ua`) bastó
+   para disparar preflight CORS en cada petición, y el XHR síncrono del
+   respaldo no puede resolver preflights en Safari. El host ya no añade
+   cabeceras al pasar por el proxy; el mecanismo `x-tinta-ua` queda en el
+   proxy (con su `Access-Control-Allow-Headers` corregido) por si un
+   cliente fetch/JSPI lo necesita.
+
+## Proxy: allowlist
+
+- `temp.compsci88.com` (CDN de portadas y páginas de Weeb Central) se
+  sumó a la allowlist y se redesplegó; portada y página verificadas a
+  través del proxy (200, imagen real).
+
+## Selectores ejercitados de verdad (trazados en ejecución)
+
+`article:has(section)`, `section[x-data] > section`,
+`ul > li:has(strong:contains(Author|Tag|Type|Status)) …`,
+`li:has(strong:contains(Description)) > p`, `div[x-data]`,
+`span.flex > span`, `time[datetime]`, `section[x-data*=scroll] > img`,
+`article:not(.hidden)`, `.text-lg`, `main a` — el motor soporta además
+`:nth-*`, `:is/:where/:not` con selectores complejos, `:has` con
+combinador inicial, atributos `~= | = ^ = $ = * =` con bandera `i`, y el
+detalle `select` con raíz incluida (`select_with_root` de aidoku-rs: el
+propio elemento cuenta si coincide).
