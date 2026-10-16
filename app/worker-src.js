@@ -18,6 +18,9 @@ const HAS_JSPI = !APPLE_WEBKIT_NO_CHROME && typeof WebAssembly !== 'undefined' &
 const METHODS = ['GET', 'POST', 'PUT', 'HEAD', 'DELETE', 'PATCH', 'OPTIONS', 'CONNECT', 'TRACE'];
 
 let config = { proxyBase: '', languages: ['en', 'es'] };
+// Debe coincidir con APP_VERSION en main.js: la UI los compara y avisa si
+// la actualización llegó a medias al dispositivo.
+const HOST_BUILD = '1.3.0';
 const sources = new Map(); // sourceId -> ctx
 
 function effectiveUrl(url) {
@@ -329,7 +332,7 @@ self.onmessage = async (e) => {
   try {
     if (type === 'config') {
       Object.assign(config, e.data.config || {});
-      reply({ jspi: HAS_JSPI });
+      reply({ jspi: HAS_JSPI, build: HOST_BUILD });
       return;
     }
     if (type === 'install') {
@@ -370,4 +373,4 @@ self.onmessage = async (e) => {
   }
 };
 
-post({ type: 'ready', jspi: HAS_JSPI });
+post({ type: 'ready', jspi: HAS_JSPI, build: HOST_BUILD });
