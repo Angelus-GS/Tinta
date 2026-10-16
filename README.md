@@ -9,7 +9,7 @@ portar el lector, portamos el **runtime de fuentes** a la web.
 
 ## Estado
 
-📄 **Fases 0, 1 y 2 completas.** El diseño vive en [SPEC.md](SPEC.md)
+📄 **Fases 0, 1, 2 y 3 completas.** El diseño vive en [SPEC.md](SPEC.md)
 (v0.1, 2026-10-14). La **Fase 0** demostró el ABI con un host en Node
 contra la API real (detalle en [spike/FINDINGS.md](spike/FINDINGS.md) y
 [docs/adr/0001-net-sync.md](docs/adr/0001-net-sync.md)). La **Fase 1**
@@ -21,8 +21,12 @@ módulo `html` — parser y selectores CSS en JS puro — y Weeb Central
 corre el mismo flujo completo (5 resultados para “One Piece”, 1196
 capítulos, 17/17 páginas de un capítulo), en ambos transportes de red.
 Para usarla fuera de `localhost` hace falta desplegar el proxy
-(`proxy/`, guía incluida) y pegar su URL en Ajustes. Lo siguiente es
-la Fase 3: biblioteca y descargas offline.
+(`proxy/`, guía incluida) y pegar su URL en Ajustes. La **Fase 3**
+(v1.5.0) añadió la biblioteca persistente, las descargas offline con
+precarga del capítulo siguiente, la importación de CBZ locales, el
+progreso de lectura y el lector por páginas con dirección configurable
+— todo verificado en Chromium en ambos transportes, incluida la lectura
+completa de capítulos con la red bloqueada.
 
 ## Fuentes de aceptación
 
@@ -42,7 +46,7 @@ PWA UI  ⇄  Source Host (Web Worker)  ⇄  fuente .aix (WASM)
                      ▼
         api.mangadex.org · weebcentral.com · CDNs de imágenes
 
-Persistencia local: IndexedDB (biblioteca/progreso) + OPFS (descargas)
+Persistencia local: IndexedDB (biblioteca, progreso y descargas en blobs)
 ```
 
 El problema duro, declarado desde la spec: el ABI de Aidoku espera red
@@ -57,7 +61,7 @@ escribir el host completo.
 | 0 ✅ | Spike ABI: `.aix` real contra API real (buscar → capítulos → páginas) + ADR de red síncrona |
 | 1 ✅ | MVP MangaDex de principio a fin (instalar → buscar → leer), verificado en Chromium real con JSPI |
 | 2 ✅ | Weeb Central: módulo `html` completo (parser + selectores CSS en JS puro), verificado en Chromium en ambos transportes |
-| 3 | Biblioteca, descargas offline, exportar CBZ |
+| 3 ✅ | Biblioteca, descargas offline (con precarga del siguiente), importar CBZ, progreso y lector por páginas LTR/RTL |
 | 4 | Más fuentes del catálogo Aidoku, EPUB/PDF locales (posterior) |
 
 ## Límites honestos
