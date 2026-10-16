@@ -6,6 +6,10 @@
 import { Dec, encString, encVarint, concat } from './lib/postcard.js';
 import { decManga, decMangaPageResult, decListing, decPage, encManga, encChapter } from './lib/types.js';
 import { extractAix } from './lib/unzip.js';
+import {
+  parseHtmlDocument, parseCssSelector, selectFromDocument, selectFromElement,
+  selectFromList, resolveAttr, elementText,
+} from './lib/html.js';
 
 const UA = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
 // Safari 27 ya trae JSPI, pero en la practica rompe la ejecucion de la
@@ -20,7 +24,7 @@ const METHODS = ['GET', 'POST', 'PUT', 'HEAD', 'DELETE', 'PATCH', 'OPTIONS', 'CO
 let config = { proxyBase: '', languages: ['en', 'es'] };
 // Debe coincidir con APP_VERSION en main.js: la UI los compara y avisa si
 // la actualización llegó a medias al dispositivo.
-const HOST_BUILD = '1.3.1';
+const HOST_BUILD = '1.4.0';
 const sources = new Map(); // sourceId -> ctx
 
 function effectiveUrl(url) {
@@ -83,11 +87,18 @@ async function rateLimitWait(ctx) {
 async function fetchResponse(req) {
   const init = { method: METHODS[req.method] || 'GET', headers: Object.fromEntries(req.headers) };
   if (req.body && init.method !== 'GET' && init.method !== 'HEAD') init.body = req.body;
+  // OJO: no anadir cabeceras personalizadas a las peticiones via proxy.
+  // Una cabecera no-simple dispara preflight CORS, y el XHR sincrono del
+  // respaldo no puede resolver preflights en Safari (el iPhone del usuario).
+  // El UA lo pone el proxy (uno de navegador; el de Aidoku lo desafia
+  // Cloudflare al salir desde un Worker: 403 en Weeb Central, Fase 2).
   const res = await fetch(effectiveUrl(req.url), init);
   const data = new Uint8Array(await res.arrayBuffer());
   const headers = new Map();
   res.headers.forEach((v, k) => headers.set(k.toLowerCase(), v));
-  return { status: res.status, data, headers, url: res.url };
+  // url = la pedida por la fuente (con proxy, res.url seria la del proxy y
+  // romperia la resolucion de URLs relativas/abs: del modulo html).
+  return { status: res.status, data, headers, url: req.url };
 }
 
 function fetchResponseSync(req) {
@@ -202,7 +213,17 @@ function buildImports(ctx) {
       const v = req.response.headers.get(readStr(kp, kl).toLowerCase());
       return v === undefined ? -7 : storeItem(ctx, { kind: 'string', value: v });
     },
-    html: () => -2, // Fase 2 (modulo html)
+    html: (rid) => {
+      const req = ctx.store.get(rid);
+      if (!req || req.kind !== 'request') return -1;
+      if (!req.response) return -8;
+      let text;
+      try {
+        text = new TextDecoder('utf-8', { fatal: true }).decode(req.response.data);
+      } catch { return -2; }
+      const doc = parseHtmlDocument(text, req.response.url || req.url);
+      return storeItem(ctx, { kind: 'htmlDoc', doc });
+    },
     get_image: () => -2,
     get_url: (rid) => {
       const req = ctx.store.get(rid);
@@ -217,13 +238,18 @@ function buildImports(ctx) {
       const it = ctx.store.get(rid);
       if (!it) return -1;
       if (it.kind === 'encoded') return it.data.length;
-      if (it.kind === 'string') return encString(it.value).length;
+      // OJO: los items 'string' se leen como UTF-8 CRUDO, sin prefijo
+      // postcard (StoreItem::String -> s.as_bytes() en el test-runner).
+      // Con prefijo, attr("abs:href") de Weeb Central devolvia la URL con un
+      // byte de longitud delante y strip_prefix fallaba: 0 resultados.
+      if (it.kind === 'string') return new TextEncoder().encode(it.value).length;
       return -1;
     },
     read_buffer: (rid, ptr, size) => {
       const it = ctx.store.get(rid);
       if (!it) return -1;
-      const data = it.kind === 'encoded' ? it.data : it.kind === 'string' ? encString(it.value) : null;
+      const data = it.kind === 'encoded' ? it.data
+        : it.kind === 'string' ? new TextEncoder().encode(it.value) : null;
       if (!data || size > data.length) return -3;
       mem().set(data.subarray(0, size), ptr);
       return 0;
@@ -247,6 +273,101 @@ function buildImports(ctx) {
     },
   };
 
+  // Modulo html (Fase 2): semantica del test-runner de aidoku-rs
+  // (imports/html.rs + libs/html.rs). Codigos: -1 descriptor invalido,
+  // -2 string invalido, -4 selector invalido, -5 sin resultado.
+  const traceHtml = (fn, q) => {
+    try { if (globalThis.__tintaHtmlTrace) globalThis.__tintaHtmlTrace(fn, q); } catch { /* noop */ }
+  };
+  const readHostString = (ptr, len) => {
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(mem().slice(ptr, ptr + len));
+    } catch { return null; }
+  };
+  const isHtmlItem = (it) => !!it && (it.kind === 'htmlDoc' || it.kind === 'htmlElement' || it.kind === 'htmlList');
+  const selectRefs = (item, ast) => {
+    if (item.kind === 'htmlDoc') {
+      return selectFromDocument(item.doc, ast).map((node) => ({ doc: item.doc, node }));
+    }
+    if (item.kind === 'htmlElement') {
+      return selectFromElement(item.doc, item.node, ast).map((node) => ({ doc: item.doc, node }));
+    }
+    return selectFromList(item.doc, item.elements.map((e) => e.node), ast)
+      .map((node) => ({ doc: item.doc, node }));
+  };
+  const html = {
+    select: (rid, ptr, len) => {
+      const q = readHostString(ptr, len);
+      if (q === null) return -2;
+      const item = ctx.store.get(rid);
+      if (!isHtmlItem(item)) return -1;
+      let ast;
+      try { ast = parseCssSelector(q); } catch { return -4; }
+      traceHtml('select', q);
+      return storeItem(ctx, { kind: 'htmlList', elements: selectRefs(item, ast) });
+    },
+    select_first: (rid, ptr, len) => {
+      const q = readHostString(ptr, len);
+      if (q === null) return -2;
+      const item = ctx.store.get(rid);
+      if (!isHtmlItem(item)) return -1;
+      let ast;
+      try { ast = parseCssSelector(q); } catch { return -4; }
+      traceHtml('select_first', q);
+      const refs = selectRefs(item, ast);
+      if (!refs.length) return -5;
+      return storeItem(ctx, { kind: 'htmlElement', ...refs[0] });
+    },
+    size: (rid) => {
+      const item = ctx.store.get(rid);
+      if (!item || item.kind !== 'htmlList') return -1;
+      return item.elements.length;
+    },
+    first: (rid) => {
+      const item = ctx.store.get(rid);
+      if (!item || item.kind !== 'htmlList' || !item.elements.length) return -1;
+      return storeItem(ctx, { kind: 'htmlElement', ...item.elements[0] });
+    },
+    last: (rid) => {
+      const item = ctx.store.get(rid);
+      if (!item || item.kind !== 'htmlList' || !item.elements.length) return -1;
+      return storeItem(ctx, { kind: 'htmlElement', ...item.elements[item.elements.length - 1] });
+    },
+    get: (rid, index) => {
+      const item = ctx.store.get(rid);
+      if (!item || item.kind !== 'htmlList') return -1;
+      const el = item.elements[index];
+      if (!el) return -1;
+      return storeItem(ctx, { kind: 'htmlElement', ...el });
+    },
+    attr: (rid, ptr, len) => {
+      const key = readHostString(ptr, len);
+      if (key === null) return -2;
+      const item = ctx.store.get(rid);
+      if (!isHtmlItem(item) || item.kind === 'htmlDoc') return -1;
+      traceHtml('attr', key);
+      let v = null;
+      if (item.kind === 'htmlElement') {
+        v = resolveAttr(item.doc, item.node, key);
+      } else {
+        for (const e of item.elements) {
+          v = resolveAttr(e.doc, e.node, key);
+          if (v !== null) break;
+        }
+      }
+      return v === null ? -5 : storeItem(ctx, { kind: 'string', value: v });
+    },
+    text: (rid) => {
+      const item = ctx.store.get(rid);
+      if (!isHtmlItem(item) || item.kind === 'htmlDoc') return -1;
+      traceHtml('text', '');
+      const v = item.kind === 'htmlElement'
+        ? elementText(item.node)
+        : item.elements.map((e) => elementText(e.node)).join(' ');
+      return storeItem(ctx, { kind: 'string', value: v });
+    },
+  };
+
   const env = {
     print: (ptr, len) => console.log(`[${ctx.id}]`, readStr(ptr, len)),
     abort: () => { console.error(`[${ctx.id}] abort()`); throw new Error('La fuente llamo a abort()'); },
@@ -260,10 +381,10 @@ function buildImports(ctx) {
     sleep: () => {},
   };
 
-  // Modulos aun no implementados: stubs con error limpio (Fase 2: html, js, canvas)
+  // Modulos aun no implementados: stubs con error limpio (js, canvas)
   const stubModule = () => new Proxy({}, { get: (_t, name) => (typeof name === 'string' ? () => -2 : undefined) });
 
-  return { env, std, net, defaults, html: stubModule(), js: stubModule(), canvas: stubModule() };
+  return { env, std, net, defaults, html, js: stubModule(), canvas: stubModule() };
 }
 
 function readResultBytes(ctx, ptr) {
