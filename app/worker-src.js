@@ -7,7 +7,14 @@ import { Dec, encString, encVarint, concat } from './lib/postcard.js';
 import { decManga, decMangaPageResult, decListing, decPage, encManga, encChapter } from './lib/types.js';
 import { extractAix } from './lib/unzip.js';
 
-const HAS_JSPI = typeof WebAssembly !== 'undefined' && 'Suspending' in WebAssembly && 'promising' in WebAssembly;
+const UA = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+// Safari 27 ya trae JSPI, pero en la practica rompe la ejecucion de la
+// fuente (get_search_manga_list devolvia -3 desde std.read_buffer en el
+// iPhone del usuario, 2026-10-15). En navegadores AppleWebKit sin Chrome
+// (Safari mac/iOS y todo navegador iOS) se usa el respaldo XHR sincrono,
+// que paso la aceptacion completa via proxy. Reevaluar cuando madure.
+const APPLE_WEBKIT_NO_CHROME = /AppleWebKit/.test(UA) && !/Chrome\/|Chromium\/|Edg\/|OPR\//.test(UA);
+const HAS_JSPI = !APPLE_WEBKIT_NO_CHROME && typeof WebAssembly !== 'undefined' && 'Suspending' in WebAssembly && 'promising' in WebAssembly;
 const METHODS = ['GET', 'POST', 'PUT', 'HEAD', 'DELETE', 'PATCH', 'OPTIONS', 'CONNECT', 'TRACE'];
 
 let config = { proxyBase: '', languages: ['en', 'es'] };
