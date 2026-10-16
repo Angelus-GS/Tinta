@@ -4,6 +4,11 @@ import { MangaStatus, ContentRating } from './lib/types.js';
 
 window.__tintaBooted = false;
 
+// Versión visible de la app: súbela (y la cache del SW) en cada publicación.
+// El host reporta la suya (HOST_BUILD en worker-src.js); si difieren, la
+// actualización llegó a medias a este dispositivo.
+const APP_VERSION = '1.3.0';
+
 const CATALOG_BASE = 'https://aidoku-community.github.io/sources/';
 const ANCHORS = ['multi.mangadex', 'en.weebcentral'];
 const $ = (sel) => document.querySelector(sel);
@@ -342,8 +347,19 @@ $('#btn-save-settings').addEventListener('click', async () => {
 // --- Arranque ------------------------------------------------------------------
 (async function boot() {
   const bootStatus = (t) => { const el = $('#boot-status'); if (el) el.textContent = t; };
+  const verEl = $('#app-version');
+  if (verEl) verEl.textContent = 'v' + APP_VERSION;
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    // Si un SW nuevo toma el control, recargar una vez para estrenar todo el
+    // cascaron nuevo (evita actualizaciones "a medias" en iOS).
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (hadController && !reloaded) { reloaded = true; location.reload(); }
+    });
+    navigator.serviceWorker.register('sw.js')
+      .then((reg) => reg.update())
+      .catch(() => {});
   }
   // Esperar al worker y aplicar configuración (con tope: la UI nunca se
   // queda muda esperando a un worker que no respondió)
@@ -361,6 +377,11 @@ $('#btn-save-settings').addEventListener('click', async () => {
     const pill = $('#net-status');
     if (cfg.jspi) { pill.textContent = 'JSPI activo'; pill.classList.add('ok'); }
     else { pill.textContent = 'Respaldo XHR síncrono'; }
+    const vi = $('#version-info');
+    if (vi) {
+      vi.textContent = `Tinta v${APP_VERSION} · Host v${cfg.build || '?'}` +
+        (cfg.build && cfg.build !== APP_VERSION ? ' · ⚠️ actualización a medias: cierra y reabre la app' : '');
+    }
   } catch { $('#net-status').textContent = 'Worker sin respuesta'; }
 
   bootStatus('Restaurando fuentes…');
