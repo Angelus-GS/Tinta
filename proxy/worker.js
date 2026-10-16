@@ -74,7 +74,11 @@ export default {
     }
 
     const outHeaders = new Headers();
-    for (const h of ['content-type', 'content-length', 'cache-control', 'etag']) {
+    // OJO: nunca reenviar content-length (ni content-encoding) del origen.
+    // El runtime puede entregar el cuerpo descomprimido y la longitud
+    // original lo truncaba en el cliente (las busquedas llegaban cortadas
+    // y Tinta las leia como "sin resultados"). Que el runtime ponga la suya.
+    for (const h of ['content-type', 'cache-control', 'etag']) {
       const v = upstream.headers.get(h);
       if (v) outHeaders.set(h, v);
     }
