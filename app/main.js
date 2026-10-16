@@ -7,11 +7,21 @@ window.__tintaBooted = false;
 // Versión visible de la app: súbela (y la cache del SW) en cada publicación.
 // El host reporta la suya (HOST_BUILD en worker-src.js); si difieren, la
 // actualización llegó a medias a este dispositivo.
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 
 const CATALOG_BASE = 'https://aidoku-community.github.io/sources/';
 const ANCHORS = ['multi.mangadex', 'en.weebcentral'];
 const $ = (sel) => document.querySelector(sel);
+
+// Portadas y páginas también viajan por el proxy cuando está configurado:
+// en algunas redes los dominios de imágenes de MangaDex no responden en
+// directo, y el proxy ya los trae en su lista permitida.
+function imgUrl(u) {
+  if (!u) return u;
+  const base = localStorage.getItem('tinta.proxyBase') || '';
+  if (!base) return u;
+  return base.replace(/\/?$/, '/') + '?u=' + encodeURIComponent(u);
+}
 
 const state = {
   catalog: [],
@@ -183,7 +193,7 @@ function renderResults(result, append) {
     const card = document.createElement('div');
     card.className = 'card';
     card.innerHTML = `
-      ${m.cover ? `<img src="${esc(m.cover)}" alt="" loading="lazy">` : '<img alt="">'}
+      ${m.cover ? `<img src="${esc(imgUrl(m.cover))}" alt="" loading="lazy">` : '<img alt="">'}
       <div class="t">${esc(m.title)}</div>`;
     card.onclick = () => openManga(m);
     grid.appendChild(card);
@@ -222,7 +232,7 @@ async function openManga(mangaStub) {
     const rating = ContentRating[m.content_rating] || '';
     $('#manga-detail').innerHTML = `
       <div class="detail">
-        ${m.cover ? `<img src="${esc(m.cover)}" alt="">` : ''}
+        ${m.cover ? `<img src="${esc(imgUrl(m.cover))}" alt="">` : ''}
         <div class="info">
           <h2>${esc(m.title)}</h2>
           <p class="tags">${esc((m.authors || []).join(', '))} · ${esc(status)} · ${esc(rating)}</p>
@@ -264,7 +274,7 @@ async function openChapter(manga, chapter, label) {
     for (const p of pages) {
       if (p.content.type === 'url') {
         const img = document.createElement('img');
-        img.src = p.content.url;
+        img.src = imgUrl(p.content.url);
         img.alt = `Página ${shown + 1}`;
         img.loading = 'lazy';
         box.appendChild(img);
