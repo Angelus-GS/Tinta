@@ -12,7 +12,7 @@
 </head>
 <body>
 <header>
-  <div class="brand">🖋️ Tinta</div>
+  <div class="brand" id="brand" title="Ir al inicio">🖋️ Tinta</div>
   <div class="status">
     <span id="net-status" class="pill" title="Transporte de red síncrona (ADR-0001)">…</span>
     <span id="app-version" class="pill dim" title="Versión de Tinta instalada en este dispositivo">v?</span>
@@ -28,6 +28,27 @@
   Con la PWA publicada necesitas el proxy: el código y la guía están en la carpeta <code>proxy/</code> del repo.
   Dejar vacío = conexión directa.</p>
   <button id="btn-save-settings" type="button">Guardar</button>
+  <label>Modo de lectura
+    <select id="set-reader-mode">
+      <option value="scroll">Scroll vertical</option>
+      <option value="paged">Por páginas (toque para avanzar)</option>
+    </select>
+  </label>
+  <label>Dirección de avance (modo páginas)
+    <select id="set-page-dir">
+      <option value="ltr">Izquierda → derecha</option>
+      <option value="rtl">Derecha → izquierda (manga)</option>
+    </select>
+  </label>
+  <label>Precargar capítulos siguientes al leer
+    <select id="set-preload">
+      <option value="0">No precargar</option>
+      <option value="1">1 capítulo</option>
+      <option value="2">2 capítulos</option>
+      <option value="3">3 capítulos</option>
+    </select>
+  </label>
+  <p class="hint">La precarga deja el capítulo siguiente listo para leer sin conexión, en el mismo almacén que las descargas manuales.</p>
   <p class="hint" id="version-info"></p>
 </section>
 
@@ -36,6 +57,14 @@
   <section id="view-sources">
     <h2>Fuentes instaladas</h2>
     <div id="installed" class="source-list"><p class="hint">Ninguna todavía. Instala MangaDex desde el catálogo.</p></div>
+    <h2>Biblioteca</h2>
+    <div id="library" class="grid"><p class="hint">Tu biblioteca está vacía: abre un manga y toca «Añadir a la biblioteca».</p></div>
+    <div class="import-row">
+      <label class="import-btn">📥 Importar CBZ
+        <input id="cbz-file" type="file" accept=".cbz,application/zip" hidden>
+      </label>
+      <span class="hint">Lee un archivo .cbz de tu dispositivo, sin conexión.</span>
+    </div>
     <h2>Catálogo Aidoku</h2>
     <input id="catalog-filter" type="search" placeholder="Filtrar fuentes del catálogo…">
     <div id="catalog" class="source-list"><p class="hint">Cargando catálogo…</p></div>
@@ -63,6 +92,10 @@
   <section id="view-reader" hidden>
     <button class="ghost back" data-back-manga type="button">← Capítulos</button>
     <h3 id="reader-title"></h3>
+    <div class="reader-bar">
+      <button id="btn-mode" class="ghost" type="button">Modo: Scroll</button>
+      <span id="page-indicator" class="pill"></span>
+    </div>
     <div id="pages" class="pages"></div>
   </section>
 </main>
