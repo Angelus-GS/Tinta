@@ -192,6 +192,15 @@ directamente en esta elección** (ver §11).
 > ADR-0001 y `spike/FINDINGS.md`. Nota: el spike demostró la semántica con
 > HTTP bloqueante en Node; el transporte de navegador se construye en
 > Fase 1 sobre esta decisión.
+>
+> **Ajuste en producción (2026-10-15):** el respaldo implementado en Fase 1
+> es XHR síncrono en el worker (sin Asyncify todavía). Safari 27 ya expone
+> JSPI, pero su implementación rompe la ejecución de la fuente
+> (`get_search_manga_list` devolvía -3 desde `std.read_buffer` en un iPhone
+> real); por eso el host **desactiva JSPI en navegadores AppleWebKit sin
+> Chrome** (Safari y todo navegador iOS) y usa el respaldo, que pasó la
+> aceptación completa (búsqueda → capítulos → 49/49 páginas) a través del
+> proxy. Chromium/Firefox siguen en la ruta JSPI.
 
 ### 5.5 Codec postcard
 
