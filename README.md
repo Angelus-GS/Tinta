@@ -9,16 +9,20 @@ portar el lector, portamos el **runtime de fuentes** a la web.
 
 ## Estado
 
-📄 **Fases 0 y 1 completas.** El diseño vive en [SPEC.md](SPEC.md)
+📄 **Fases 0, 1 y 2 completas.** El diseño vive en [SPEC.md](SPEC.md)
 (v0.1, 2026-10-14). La **Fase 0** demostró el ABI con un host en Node
 contra la API real (detalle en [spike/FINDINGS.md](spike/FINDINGS.md) y
 [docs/adr/0001-net-sync.md](docs/adr/0001-net-sync.md)). La **Fase 1**
 llevó ese host a un Web Worker dentro de la PWA (`app/`) y se verificó
 en un Chromium real: **JSPI activo**, MangaDex instalada desde el
 catálogo, búsqueda, detalle con 137 capítulos de Yotsuba y un capítulo
-leído con **49/49 páginas cargadas**. Para usarla fuera de `localhost`
-hace falta desplegar el proxy (`proxy/`, guía incluida) y pegar su URL
-en Ajustes. Lo siguiente es la Fase 2: el módulo `html` para Weeb Central.
+leído con **49/49 páginas cargadas**. La **Fase 2** (v1.4.0) añadió el
+módulo `html` — parser y selectores CSS en JS puro — y Weeb Central
+corre el mismo flujo completo (5 resultados para “One Piece”, 1196
+capítulos, 17/17 páginas de un capítulo), en ambos transportes de red.
+Para usarla fuera de `localhost` hace falta desplegar el proxy
+(`proxy/`, guía incluida) y pegar su URL en Ajustes. Lo siguiente es
+la Fase 3: biblioteca y descargas offline.
 
 ## Fuentes de aceptación
 
@@ -52,7 +56,7 @@ escribir el host completo.
 |---|---|
 | 0 ✅ | Spike ABI: `.aix` real contra API real (buscar → capítulos → páginas) + ADR de red síncrona |
 | 1 ✅ | MVP MangaDex de principio a fin (instalar → buscar → leer), verificado en Chromium real con JSPI |
-| 2 | Weeb Central: módulo `html` completo |
+| 2 ✅ | Weeb Central: módulo `html` completo (parser + selectores CSS en JS puro), verificado en Chromium en ambos transportes |
 | 3 | Biblioteca, descargas offline, exportar CBZ |
 | 4 | Más fuentes del catálogo Aidoku, EPUB/PDF locales (posterior) |
 
