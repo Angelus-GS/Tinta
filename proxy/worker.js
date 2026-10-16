@@ -14,11 +14,16 @@ const ALLOWLIST = [
   'mangadex.network',      // cubre *.mangadex.network (servidores at-home)
   'weebcentral.com',
   'www.weebcentral.com',
+  'temp.compsci88.com',    // CDN de portadas y paginas de Weeb Central
   'aidoku-community.github.io',
 ];
 
 const FORWARD_REQUEST_HEADERS = ['accept', 'accept-language', 'content-type', 'range'];
-const DEFAULT_UA = 'Aidoku/1 CFNetwork/3826.500.131 Darwin/24.5.0';
+// UA por defecto: uno de navegador real. El de Aidoku ("Aidoku/1 CFNetwork…")
+// lo desafia Cloudflare al salir desde un Worker (403 en Weeb Central), y un
+// UA de navegador pasa sin friccion en todos los destinos actuales. Un
+// cliente puede seguir forzando otro con la cabecera x-tinta-ua.
+const DEFAULT_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
 
 function allowed(hostname) {
   return ALLOWLIST.some((d) => hostname === d || hostname.endsWith(`.${d}`));
@@ -28,7 +33,9 @@ function corsHeaders(extra = {}) {
   return {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Range',
+    // X-Tinta-Ua es imprescindible: si no se anuncia, el navegador bloquea
+    // tras el preflight cualquier peticion del host que la lleve (Fase 2).
+    'Access-Control-Allow-Headers': 'Content-Type, Range, X-Tinta-Ua',
     'Access-Control-Expose-Headers': '*',
     ...extra,
   };
