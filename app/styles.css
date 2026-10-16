@@ -29,6 +29,7 @@ header {
   background: var(--panel2); color: var(--muted); border: 1px solid #33333b;
 }
 .pill.ok { color: #7ee2a0; border-color: #274d36; }
+.pill.dim { opacity: .55; }
 button {
   background: var(--accent); color: #191204; border: 0; border-radius: 8px;
   padding: 8px 14px; font-weight: 600; cursor: pointer; font-size: .92rem;
