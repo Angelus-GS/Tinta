@@ -7,7 +7,7 @@ window.__tintaBooted = false;
 // Versión visible de la app: súbela (y la cache del SW) en cada publicación.
 // El host reporta la suya (HOST_BUILD en worker-src.js); si difieren, la
 // actualización llegó a medias a este dispositivo.
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.4.1';
 
 const CATALOG_BASE = 'https://aidoku-community.github.io/sources/';
 const ANCHORS = ['multi.mangadex', 'en.weebcentral'];
@@ -21,6 +21,17 @@ function imgUrl(u) {
   const base = localStorage.getItem('tinta.proxyBase') || '';
   if (!base) return u;
   return base.replace(/\/?$/, '/') + '?u=' + encodeURIComponent(u);
+}
+
+// Si el proxy no puede con una imagen (p. ej. un CDN de scanlation que aún
+// no está en su lista), reintentar en directo una sola vez: las imágenes no
+// necesitan CORS y muchos CDN sí responden al navegador tal cual.
+function armImgFallback(img, originalUrl) {
+  if (!img || !originalUrl || img.src === originalUrl) return;
+  img.addEventListener('error', () => { img.src = originalUrl; }, { once: true });
+}
+function wireImgFallbacks(container) {
+  container.querySelectorAll('img[data-direct]').forEach((img) => armImgFallback(img, img.dataset.direct));
 }
 
 const state = {
@@ -193,8 +204,10 @@ function renderResults(result, append) {
     const card = document.createElement('div');
     card.className = 'card';
     card.innerHTML = `
-      ${m.cover ? `<img src="${esc(imgUrl(m.cover))}" alt="" loading="lazy">` : '<img alt="">'}
+      ${m.cover ? `<img src="${esc(imgUrl(m.cover))}" data-direct="${esc(m.cover)}" alt="" loading="lazy">` : '<img alt="">'}
       <div class="t">${esc(m.title)}</div>`;
+    const cimg = card.querySelector('img[data-direct]');
+    if (cimg) armImgFallback(cimg, m.cover);
     card.onclick = () => openManga(m);
     grid.appendChild(card);
   }
@@ -232,7 +245,7 @@ async function openManga(mangaStub) {
     const rating = ContentRating[m.content_rating] || '';
     $('#manga-detail').innerHTML = `
       <div class="detail">
-        ${m.cover ? `<img src="${esc(imgUrl(m.cover))}" alt="">` : ''}
+        ${m.cover ? `<img src="${esc(imgUrl(m.cover))}" data-direct="${esc(m.cover)}" alt="">` : ''}
         <div class="info">
           <h2>${esc(m.title)}</h2>
           <p class="tags">${esc((m.authors || []).join(', '))} · ${esc(status)} · ${esc(rating)}</p>
@@ -240,6 +253,7 @@ async function openManga(mangaStub) {
           <p class="desc">${esc(m.description || '')}</p>
         </div>
       </div>`;
+    wireImgFallbacks($('#manga-detail'));
     const box = $('#chapters');
     box.innerHTML = '';
     for (const ch of m.chapters || []) {
@@ -275,6 +289,7 @@ async function openChapter(manga, chapter, label) {
       if (p.content.type === 'url') {
         const img = document.createElement('img');
         img.src = imgUrl(p.content.url);
+        armImgFallback(img, p.content.url);
         img.alt = `Página ${shown + 1}`;
         img.loading = 'lazy';
         box.appendChild(img);
