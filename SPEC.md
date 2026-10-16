@@ -262,7 +262,7 @@ app nativa).
 | Fase | Entregable | Criterio de salida |
 |---|---|---|
 | **0. Spike ABI** ✅ (2026-10-15) | Host mínimo (Node) que carga el `.aix` de MangaDex y corre la cadena completa **contra la API real** (superó el criterio original, que pedía red simulada): buscar → detalle+capítulos → lista de páginas, todo decodificado byte-exacto; ADR-0001 escrito. Ver `spike/FINDINGS.md`. | ✅ Búsqueda, update (929 caps. de One Piece) y páginas (51 de Yotsuba, imagen HTTP 200) verificados. |
-| **1. MVP MangaDex** | Source Manager + proxy + host + lector mínimo, MangaDex real de principio a fin. | Flujo §2.1 completo con MangaDex. |
+| **1. MVP MangaDex** ✅ (2026-10-15) | Source Manager + proxy + host en Web Worker + lector mínimo, MangaDex real de principio a fin. Verificado en Chromium 155 real: **JSPI activo**, instalar desde el catálogo → buscar “Yotsuba” (20 resultados) → detalle con 137 capítulos → lector con **49/49 páginas cargadas** desde `*.mangadex.network`, cero errores de consola. El proxy está escrito y documentado (`proxy/`); su despliegue en la cuenta del usuario es lo único pendiente para que el origen público funcione (desde `localhost` MangaDex responde directo). | ✅ Flujo §2.1 completo con MangaDex en navegador real. |
 | **2. Weeb Central** | Módulo `html` completo + ajustes del proxy para scraping. | Flujo §2.1 completo con Weeb Central, sin código específico para ella. |
 | **3. Biblioteca y offline** | Descargas a OPFS, progreso, exportar CBZ, actualización de fuentes desde la lista. | Leer offline y actualizar una fuente sin perder biblioteca. |
 | **4. (Posterior)** | Más fuentes del catálogo, EPUB/PDF locales, sincronización de progreso tipo KOReader Sync. | Fuera del compromiso inicial. |

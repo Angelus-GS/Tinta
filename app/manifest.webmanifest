@@ -1,0 +1,1 @@
+{"background_color":"#0e0e10","description":"Lector de manga PWA compatible con fuentes Aidoku (.aix / WASM)","display":"standalone","icons":[{"sizes":"any","src":"icons/icon.svg","type":"image/svg+xml"}],"lang":"es","name":"Tinta — lector de manga","scope":"./","short_name":"Tinta","start_url":"./","theme_color":"#0e0e10"}

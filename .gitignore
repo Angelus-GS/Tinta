@@ -1,0 +1,7 @@
+# Artefactos locales de desarrollo (no van al repo)
+e2e/node_modules/
+e2e/chrome-headless-shell/
+e2e/package-lock.json
+spike/fixtures/
+spike/aidoku-rs-ref/
+node_modules/
