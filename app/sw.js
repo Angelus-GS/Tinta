@@ -1,6 +1,6 @@
 // Service worker de Tinta: cachea solo el cascaron de la app (mismo origen).
 // Las llamadas a fuentes (MangaDex, catalogo, imagenes) siempre van a la red.
-const CACHE = 'tinta-shell-v1';
+const CACHE = 'tinta-shell-v2';
 const SHELL = [
   './',
   './index.html',

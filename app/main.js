@@ -2,6 +2,8 @@
 import { idb } from './lib/idb.js';
 import { MangaStatus, ContentRating } from './lib/types.js';
 
+window.__tintaBooted = false;
+
 const CATALOG_BASE = 'https://aidoku-community.github.io/sources/';
 const ANCHORS = ['multi.mangadex', 'en.weebcentral'];
 const $ = (sel) => document.querySelector(sel);
@@ -18,7 +20,9 @@ const state = {
 };
 
 // --- Worker client ---------------------------------------------------------
-const worker = new Worker('host-worker.js', { type: 'module' });
+// Worker clásico autocontenido (ver e2e/bundle-worker.mjs): Safari ha sido
+// frágil con workers de tipo módulo; el clásico corre en todos lados.
+const worker = new Worker('host-worker.js');
 const pending = new Map();
 let seq = 1;
 let workerReady = null;
@@ -337,10 +341,12 @@ $('#btn-save-settings').addEventListener('click', async () => {
 
 // --- Arranque ------------------------------------------------------------------
 (async function boot() {
+  const bootStatus = (t) => { const el = $('#boot-status'); if (el) el.textContent = t; };
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
-  // Esperar al worker y aplicar configuración
+  // Esperar al worker y aplicar configuración (con tope: la UI nunca se
+  // queda muda esperando a un worker que no respondió)
   const start = Date.now();
   while (!workerReady && Date.now() - start < 5000) {
     await new Promise((r) => setTimeout(r, 50));
@@ -348,14 +354,19 @@ $('#btn-save-settings').addEventListener('click', async () => {
   const proxyBase = localStorage.getItem('tinta.proxyBase') || '';
   $('#proxy-url').value = proxyBase;
   try {
-    const cfg = await call({ type: 'config', config: { proxyBase, languages: ['en', 'es'] } });
+    const cfg = await Promise.race([
+      call({ type: 'config', config: { proxyBase, languages: ['en', 'es'] } }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 10000)),
+    ]);
     const pill = $('#net-status');
     if (cfg.jspi) { pill.textContent = 'JSPI activo'; pill.classList.add('ok'); }
     else { pill.textContent = 'Respaldo XHR síncrono'; }
   } catch { $('#net-status').textContent = 'Worker sin respuesta'; }
 
+  bootStatus('Restaurando fuentes…');
   await restoreInstalled();
   renderInstalled();
+  bootStatus('Cargando catálogo…');
   try {
     const res = await fetch(CATALOG_BASE + 'index.min.json');
     const idx = await res.json();
@@ -364,4 +375,7 @@ $('#btn-save-settings').addEventListener('click', async () => {
   } catch (err) {
     $('#catalog').innerHTML = `<p class="hint">⚠️ No se pudo cargar el catálogo: ${esc(err.message)}</p>`;
   }
+  window.__tintaBooted = true;
+  const el = $('#boot-status');
+  if (el) el.hidden = true;
 })();

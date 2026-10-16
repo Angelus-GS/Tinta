@@ -30,6 +30,7 @@
 </section>
 
 <main>
+  <div id="boot-status" class="hint">Cargando Tinta…</div>
   <section id="view-sources">
     <h2>Fuentes instaladas</h2>
     <div id="installed" class="source-list"><p class="hint">Ninguna todavía. Instala MangaDex desde el catálogo.</p></div>
@@ -65,6 +66,26 @@
 </main>
 
 <div id="toast" hidden></div>
+<script>
+  // Vigilante de arranque (script clásico, corre aunque los módulos fallen):
+  // si la app no marca su arranque en 9 s, deja un diagnóstico VISIBLE en vez
+  // de una pantalla negra muda.
+  window.__tintaErrors = [];
+  window.addEventListener('error', (e) => {
+    window.__tintaErrors.push(String(e.message || e.type));
+  });
+  setTimeout(() => {
+    if (!window.__tintaBooted) {
+      const el = document.getElementById('boot-status');
+      if (el) {
+        el.hidden = false;
+        el.textContent = '⚠️ La app no terminó de arrancar en este navegador.'
+          + (window.__tintaErrors.length ? ' Error: ' + window.__tintaErrors[0] : '')
+          + ' Mándale una captura de esta pantalla a Calíope.';
+      }
+    }
+  }, 9000);
+</script>
 <script type="module" src="main.js"></script>
 </body>
 </html>
