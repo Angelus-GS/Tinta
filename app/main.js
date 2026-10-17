@@ -9,7 +9,7 @@ window.__tintaBooted = false;
 // Versión visible de la app: súbela (y la cache del SW) en cada publicación.
 // El host reporta la suya (HOST_BUILD en worker-src.js); si difieren, la
 // actualización llegó a medias a este dispositivo.
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 
 const CATALOG_BASE = 'https://aidoku-community.github.io/sources/';
 const ANCHORS = ['multi.mangadex', 'en.weebcentral'];
@@ -19,6 +19,7 @@ const $ = (sel) => document.querySelector(sel);
 const pref = {
   readerMode: () => localStorage.getItem('tinta.readerMode') || 'scroll',
   pageDir: () => localStorage.getItem('tinta.pageDir') || 'ltr',
+  pageFit: () => localStorage.getItem('tinta.pageFit') || 'ajustar',
   preloadCount: () => {
     const n = parseInt(localStorage.getItem('tinta.preloadCount') ?? '1', 10);
     return Number.isFinite(n) ? Math.min(3, Math.max(0, n)) : 1;
@@ -118,6 +119,7 @@ function show(view) {
   for (const id of ['view-sources', 'view-browse', 'view-manga', 'view-reader']) {
     document.getElementById(id).hidden = id !== view;
   }
+  if (view !== 'view-reader') setImmersive(false);
   window.scrollTo(0, 0);
 }
 
@@ -209,6 +211,28 @@ async function renderLibrary() {
     idb.allLibrary(), idb.allLocalBooks(), idb.allProgress(),
   ]);
   const progByKey = new Map(progress.map((p) => [p.key, p]));
+  // Sección «Favoritos» del home: los registros de la biblioteca con la
+  // marca favorite, con portada; tocar uno abre su detalle (snapshot).
+  const favWrap = $('#favorites-wrap');
+  const favBox = $('#favorites');
+  if (favWrap && favBox) {
+    const favs = lib.filter((r) => r.favorite);
+    favWrap.hidden = !favs.length;
+    favBox.innerHTML = '';
+    for (const rec of favs) {
+      const srcName = state.installed.get(rec.sourceId)?.name || rec.sourceId;
+      const card = document.createElement('div');
+      card.className = 'card fav-card';
+      card.innerHTML = `
+        <span class="fav-star" title="Favorito">⭐</span>
+        ${rec.cover ? `<img src="${esc(imgUrl(rec.cover))}" data-direct="${esc(rec.cover)}" alt="" loading="lazy">` : '<img alt="">'}
+        <div class="t">${esc(rec.title)}</div>
+        <div class="sub">${esc(srcName)}</div>`;
+      wireImgFallbacks(card);
+      card.addEventListener('click', () => openFromLibrary(rec));
+      favBox.appendChild(card);
+    }
+  }
   box.innerHTML = '';
   let any = false;
   for (const rec of lib) {
@@ -288,6 +312,7 @@ async function toggleLibrary() {
     toast('Añadido a la biblioteca');
   }
   await refreshLibraryButton();
+  await refreshFavButton();
   renderLibrary();
 }
 
@@ -296,6 +321,43 @@ async function refreshLibraryButton() {
   if (!btn || !state.currentManga) return;
   const rec = await idb.getLibrary(libKeyOf(state.currentSource, state.currentManga.key));
   btn.textContent = rec ? '✓ En tu biblioteca (quitar)' : '＋ Añadir a la biblioteca';
+}
+
+// Favorito = marca `favorite` sobre el registro de la biblioteca (favorito
+// implica guardado: si aún no hay registro, se crea con el snapshot). La
+// estrella SOLO toca la marca: quitarla saca el manga del home pero el
+// registro permanece en la biblioteca.
+async function toggleFavorite() {
+  const m = state.currentManga;
+  if (!m) return;
+  const key = libKeyOf(state.currentSource, m.key);
+  let rec = await idb.getLibrary(key);
+  if (!rec) {
+    rec = {
+      key,
+      sourceId: state.currentSource,
+      mangaKey: m.key,
+      title: m.title,
+      cover: m.cover,
+      stub: { key: m.key, title: m.title, cover: m.cover },
+      snapshot: m,
+      addedAt: Date.now(),
+    };
+  }
+  rec.favorite = !rec.favorite;
+  await idb.putLibrary(rec);
+  toast(rec.favorite ? '⭐ Añadido a favoritos' : 'Estrella quitada (sigue en tu biblioteca)');
+  await refreshFavButton();
+  renderLibrary();
+}
+
+async function refreshFavButton() {
+  const btn = $('#btn-fav');
+  if (!btn || !state.currentManga) return;
+  const rec = await idb.getLibrary(libKeyOf(state.currentSource, state.currentManga.key));
+  const fav = !!rec?.favorite;
+  btn.textContent = fav ? '⭐ Favorito' : '☆ Favorito';
+  btn.classList.toggle('fav-on', fav);
 }
 
 // --- Progreso de lectura ------------------------------------------------------
@@ -543,11 +605,14 @@ async function openManga(mangaStub, opts = {}) {
     </div>
     <div class="detail-actions">
       <button id="btn-lib" type="button" class="ghost"></button>
+      <button id="btn-fav" type="button" class="ghost"></button>
       <button id="btn-continue" type="button" hidden>Continuar leyendo</button>
     </div>`;
   wireImgFallbacks($('#manga-detail'));
   await refreshLibraryButton();
+  await refreshFavButton();
   $('#btn-lib').addEventListener('click', toggleLibrary);
+  $('#btn-fav').addEventListener('click', toggleFavorite);
   const contBtn = $('#btn-continue');
   if (prog?.lastChapterKey) {
     const ch = state.currentChapters.find((c) => c.key === prog.lastChapterKey);
@@ -731,6 +796,66 @@ async function openLocalBook(book) {
   await goToPage(startPage, { quiet: startPage === 0 });
 }
 
+// --- Lector inmersivo (modo por páginas a pantalla completa) -----------------
+// En modo paginado la app entera se rinde: sin cabecera ni barras, fondo
+// negro y la página al máximo. La Fullscreen API se intenta donde existe
+// (en iPhone no está para elementos: la inmersión CSS basta y nada se rompe).
+function setImmersive(on) {
+  const section = document.getElementById('view-reader');
+  if (!section) return;
+  const isOn = document.body.classList.contains('immersive');
+  if (on === isOn) return;
+  document.body.classList.toggle('immersive', on);
+  section.classList.toggle('immersive', on);
+  if (on) {
+    setReaderControlsVisible(false);
+    try {
+      if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+        const p = document.documentElement.requestFullscreen();
+        if (p && p.catch) p.catch(() => {});
+      }
+    } catch { /* sin Fullscreen API: inmersión CSS */ }
+  } else {
+    try {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        const p = document.exitFullscreen();
+        if (p && p.catch) p.catch(() => {});
+      }
+    } catch { /* noop */ }
+  }
+}
+
+function setReaderControlsVisible(v) {
+  const rc = $('#reader-controls');
+  if (!rc) return;
+  rc.hidden = !v;
+  if (state.reader) state.reader.controls = v;
+}
+
+function syncFitUi() {
+  const fit = pref.pageFit();
+  const btn = $('#btn-rc-fit');
+  if (btn) btn.textContent = `Encuadre: ${fit === 'llenar' ? 'Llenar' : 'Ajustar'}`;
+  const sel = $('#set-page-fit');
+  if (sel && sel.value !== fit) sel.value = fit;
+}
+
+function syncModeUi() {
+  const mode = pref.readerMode();
+  const label = `Modo: ${mode === 'paged' ? 'Páginas' : 'Scroll'}`;
+  $('#btn-mode').textContent = label;
+  const rc = $('#btn-rc-mode');
+  if (rc) rc.textContent = label;
+}
+
+function cycleFit() {
+  const next = pref.pageFit() === 'llenar' ? 'ajustar' : 'llenar';
+  localStorage.setItem('tinta.pageFit', next);
+  syncFitUi();
+  if (state.reader && pref.readerMode() === 'paged') paintPaged();
+  toast(next === 'llenar' ? 'Encuadre: llenar pantalla (recorta)' : 'Encuadre: ajustar (página completa)');
+}
+
 let scrollObserver = null;
 
 function renderReader() {
@@ -739,7 +864,12 @@ function renderReader() {
   const box = $('#pages');
   const mode = pref.readerMode();
   box.className = 'pages' + (mode === 'paged' ? ' paged' : '');
-  $('#btn-mode').textContent = `Modo: ${mode === 'paged' ? 'Páginas' : 'Scroll'}`;
+  setImmersive(mode === 'paged');
+  syncModeUi();
+  syncFitUi();
+  setReaderControlsVisible(false);
+  const rcTitle = $('#rc-title');
+  if (rcTitle) rcTitle.textContent = r.local ? r.manga.title : `${r.manga.title} — ${r.label}`;
   if (scrollObserver) { scrollObserver.disconnect(); scrollObserver = null; }
   box.innerHTML = '';
   if (mode === 'paged') {
@@ -747,9 +877,12 @@ function renderReader() {
     stage.className = 'paged-stage';
     stage.innerHTML = `
       <div class="zone prev" title="Anterior"></div>
+      <div class="zone center" title="Controles"></div>
       <div class="zone next" title="Siguiente"></div>`;
     stage.querySelector('.zone.prev').addEventListener('click', () => zoneNav('prev'));
     stage.querySelector('.zone.next').addEventListener('click', () => zoneNav('next'));
+    stage.querySelector('.zone.center').addEventListener('click', () =>
+      setReaderControlsVisible(!state.reader?.controls));
     box.appendChild(stage);
     paintPaged();
   } else {
@@ -786,7 +919,7 @@ function paintPaged() {
   stage.querySelector('img.page-img')?.remove();
   const item = r.items[r.idx];
   const img = document.createElement('img');
-  img.className = 'page-img';
+  img.className = `page-img fit-${pref.pageFit()}`;
   img.src = item.src;
   if (item.original) armImgFallback(img, item.original);
   img.alt = `Página ${r.idx + 1}`;
@@ -796,9 +929,12 @@ function paintPaged() {
 
 function updateIndicator() {
   const r = state.reader;
+  if (!r) return;
+  const text = `${r.idx + 1} / ${r.items.length}`;
   const el = $('#page-indicator');
-  if (!r || !el) return;
-  el.textContent = `${r.idx + 1} / ${r.items.length}`;
+  if (el) el.textContent = text;
+  const rc = $('#rc-indicator');
+  if (rc) rc.textContent = text;
 }
 
 async function goToPage(i, { quiet = false } = {}) {
@@ -939,7 +1075,7 @@ $('#btn-more').addEventListener('click', async () => {
   } catch (err) { toast(err.message, true); }
 });
 
-$('#btn-mode').addEventListener('click', () => {
+function toggleReaderMode() {
   const next = pref.readerMode() === 'paged' ? 'scroll' : 'paged';
   localStorage.setItem('tinta.readerMode', next);
   const sel = $('#set-reader-mode');
@@ -953,8 +1089,12 @@ $('#btn-mode').addEventListener('click', () => {
     }
     updateIndicator();
   }
-  toast(next === 'paged' ? 'Modo por páginas: toca los lados para avanzar' : 'Modo scroll vertical');
-});
+  toast(next === 'paged' ? 'Modo por páginas: toca los lados para avanzar, el centro para controles' : 'Modo scroll vertical');
+}
+
+$('#btn-mode').addEventListener('click', toggleReaderMode);
+$('#btn-rc-mode').addEventListener('click', toggleReaderMode);
+$('#btn-rc-fit').addEventListener('click', cycleFit);
 
 $('#cbz-file').addEventListener('change', async (e) => {
   const file = e.target.files?.[0];
@@ -994,6 +1134,10 @@ function bindPrefSelect(selId, key, { def, apply } = {}) {
   if (verEl) verEl.textContent = 'v' + APP_VERSION;
   bindPrefSelect('#set-reader-mode', 'tinta.readerMode', { def: 'scroll', apply: () => { if (state.reader) renderReader(); } });
   bindPrefSelect('#set-page-dir', 'tinta.pageDir', { def: 'ltr' });
+  bindPrefSelect('#set-page-fit', 'tinta.pageFit', {
+    def: 'ajustar',
+    apply: () => { syncFitUi(); if (state.reader && pref.readerMode() === 'paged') paintPaged(); },
+  });
   bindPrefSelect('#set-preload', 'tinta.preloadCount', { def: '1' });
   if ('serviceWorker' in navigator) {
     // Si un SW nuevo toma el control, recargar una vez para estrenar todo el
