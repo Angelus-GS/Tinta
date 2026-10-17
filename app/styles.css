@@ -98,6 +98,18 @@ input[type="search"], input[type="url"], select {
   margin: 14px 0 2px; font-weight: 700; font-size: .88rem; color: var(--accent);
   text-transform: uppercase; letter-spacing: .05em;
 }
+/* --- Ronda 3: paginación de la lista de capítulos --- */
+.chapters-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin: 16px 0 4px;
+}
+.chapters-head h3 { margin: 0; }
+.pager {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin: 8px 0;
+}
+.pager[hidden] { display: none; }
+.pager-info { flex: 1; text-align: center; color: var(--muted); font-size: .88rem; }
 .dl-btn {
   background: var(--panel2); color: var(--text); border: 1px solid #3a3a42;
   border-radius: 8px; padding: 5px 11px; font-size: .85rem; flex-shrink: 0;
