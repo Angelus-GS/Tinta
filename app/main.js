@@ -9,7 +9,7 @@ window.__tintaBooted = false;
 // Versión visible de la app: súbela (y la cache del SW) en cada publicación.
 // El host reporta la suya (HOST_BUILD en worker-src.js); si difieren, la
 // actualización llegó a medias a este dispositivo.
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.7.0';
 
 const CATALOG_BASE = 'https://aidoku-community.github.io/sources/';
 const ANCHORS = ['multi.mangadex', 'en.weebcentral'];
@@ -20,6 +20,9 @@ const pref = {
   readerMode: () => localStorage.getItem('tinta.readerMode') || 'scroll',
   pageDir: () => localStorage.getItem('tinta.pageDir') || 'ltr',
   pageFit: () => localStorage.getItem('tinta.pageFit') || 'ajustar',
+  // Orden de la lista de capítulos: 'asc' = del más viejo al más nuevo
+  // (defecto, como pidió el usuario) · 'desc' = del más nuevo al más viejo.
+  chapterOrder: () => localStorage.getItem('tinta.chapterOrder') || 'asc',
   preloadCount: () => {
     const n = parseInt(localStorage.getItem('tinta.preloadCount') ?? '1', 10);
     return Number.isFinite(n) ? Math.min(3, Math.max(0, n)) : 1;
@@ -69,6 +72,8 @@ const state = {
   lastQuery: '',
   currentManga: null,
   currentChapters: [],
+  chapterPage: 0,        // página vigente de la lista de capítulos paginada
+  chapterPages: [],      // páginas calculadas de la lista (ver buildChapterPages)
   downloaded: new Set(), // dlKeys con descarga completa
   downloading: new Map(), // dlKey -> { done, total }
   reader: null,          // sesión del lector en curso
@@ -365,19 +370,29 @@ async function getProgressRec(sourceId, mangaKey) {
   return idb.getProgress(libKeyOf(sourceId, mangaKey));
 }
 
-async function saveProgress(sourceId, manga, chapter, page, total) {
-  const key = libKeyOf(sourceId, manga.key);
-  const rec = (await idb.getProgress(key)) || {
-    key, sourceId, mangaKey: manga.key, chapters: {}, updatedAt: 0,
+// Los guardados de progreso se SERIALIZAN en una cadena: el lector dispara
+// muchos saveProgress seguidos (observador de scroll, avance por páginas) y
+// cada uno hace get→put; sin orden, un guardado viejo podía aterrizar después
+// del último y pisar la página final (la marca quedaba en «pág. N» en vez de
+// «✓ leído»). Con la cadena, el último guardado pedido es el que queda.
+let progressChain = Promise.resolve();
+function saveProgress(sourceId, manga, chapter, page, total) {
+  const run = async () => {
+    const key = libKeyOf(sourceId, manga.key);
+    const rec = (await idb.getProgress(key)) || {
+      key, sourceId, mangaKey: manga.key, chapters: {}, updatedAt: 0,
+    };
+    rec.chapters[chapter.key] = {
+      page, total, finished: page >= total - 1, updatedAt: Date.now(),
+    };
+    rec.lastChapterKey = chapter.key;
+    rec.lastChapterLabel = chapterLabelOf(chapter);
+    rec.lastPage = page;
+    rec.updatedAt = Date.now();
+    await idb.putProgress(rec);
   };
-  rec.chapters[chapter.key] = {
-    page, total, finished: page >= total - 1, updatedAt: Date.now(),
-  };
-  rec.lastChapterKey = chapter.key;
-  rec.lastChapterLabel = chapterLabelOf(chapter);
-  rec.lastPage = page;
-  rec.updatedAt = Date.now();
-  await idb.putProgress(rec);
+  progressChain = progressChain.then(run, run);
+  return progressChain;
 }
 
 // --- Descargas offline ---------------------------------------------------------
@@ -578,6 +593,9 @@ async function openManga(mangaStub, opts = {}) {
   }
   state.currentManga = m;
   state.currentChapters = m.chapters || [];
+  // La lista paginada siempre arranca en su primera página (con el orden por
+  // defecto: el tomo más viejo primero).
+  state.chapterPage = 0;
   if (fromSnapshot) toast('Sin conexión: mostrando la copia guardada en tu biblioteca');
   // Refrescar la copia de la biblioteca con el detalle recién traído
   if (!fromSnapshot) {
@@ -646,6 +664,155 @@ async function refreshChapterMarks() {
   refreshDlButtons();
 }
 
+// --- Lista de capítulos: orden y paginación ----------------------------------
+// state.currentChapters conserva SIEMPRE el orden crudo de la fuente (el más
+// nuevo primero): avance, descargas y precarga operan sobre ese orden real.
+// El orden de DESPLIEGUE es otra cosa: por defecto ascendente (el tomo más
+// viejo primero) e invertible con un botón; la preferencia persiste.
+function orderedChapters() {
+  const chs = state.currentChapters || [];
+  return pref.chapterOrder() === 'asc' ? [...chs].reverse() : [...chs];
+}
+
+const CHAPTERS_PER_PAGE = 50;   // sin volúmenes: páginas de 50 capítulos
+const VOLUME_PAGE_MAX = 100;    // un volumen absurdo se subdivide en bloques de 100
+
+// Agrupa la lista (ya en orden de despliegue) en páginas: una por volumen
+// cuando la fuente trae volume_number; si no, bloques de CHAPTERS_PER_PAGE.
+function buildChapterPages(display) {
+  const hasVolumes = display.some((c) => c.volume_number != null);
+  if (!hasVolumes) {
+    const pages = [];
+    for (let i = 0; i < display.length; i += CHAPTERS_PER_PAGE) {
+      pages.push({ kind: 'plain', chapters: display.slice(i, i + CHAPTERS_PER_PAGE) });
+    }
+    pages.forEach((p, i) => { p.label = `Página ${i + 1} de ${pages.length}`; });
+    return pages;
+  }
+  const groups = [];
+  for (const ch of display) {
+    const v = ch.volume_number ?? null;
+    const last = groups[groups.length - 1];
+    if (last && last.volume === v) last.chapters.push(ch);
+    else groups.push({ volume: v, chapters: [ch] });
+  }
+  const pages = [];
+  for (const g of groups) {
+    const parts = Math.ceil(g.chapters.length / VOLUME_PAGE_MAX);
+    for (let i = 0; i < parts; i++) {
+      pages.push({
+        kind: 'vol', volume: g.volume, part: i + 1, parts,
+        chapters: g.chapters.slice(i * VOLUME_PAGE_MAX, (i + 1) * VOLUME_PAGE_MAX),
+      });
+    }
+  }
+  for (const p of pages) {
+    const base = p.volume != null ? `Volumen ${p.volume}` : 'Sin volumen';
+    p.label = p.parts > 1 ? `${base} · parte ${p.part}/${p.parts}` : base;
+  }
+  return pages;
+}
+
+// ¿En qué página de la lista (orden de despliegue vigente) vive un capítulo?
+function chapterListPageOf(chapterKey) {
+  const pages = buildChapterPages(orderedChapters());
+  return pages.findIndex((p) => p.chapters.some((c) => c.key === chapterKey));
+}
+
+function syncOrderUi() {
+  const order = pref.chapterOrder();
+  const btn = $('#btn-order');
+  if (btn) btn.textContent = order === 'asc' ? 'Orden: viejo → nuevo' : 'Orden: nuevo → viejo';
+  const sel = $('#set-chapter-order');
+  if (sel && sel.value !== order) sel.value = order;
+}
+
+function setChapterOrder(order) {
+  localStorage.setItem('tinta.chapterOrder', order);
+  state.chapterPage = 0;
+  syncOrderUi();
+  if (state.currentManga) renderChapters(state.currentManga).catch(() => {});
+  toast(order === 'asc'
+    ? 'Capítulos: del más viejo al más nuevo'
+    : 'Capítulos: del más nuevo al más viejo');
+}
+
+function renderPagers() {
+  const total = state.chapterPages.length;
+  for (const sel of ['#chapters-pager-top', '#chapters-pager-bottom']) {
+    const el = $(sel);
+    if (!el) continue;
+    el.innerHTML = '';
+    el.hidden = total <= 1;
+    if (total <= 1) continue;
+    const cur = state.chapterPage;
+    const page = state.chapterPages[cur];
+    const prev = document.createElement('button');
+    prev.type = 'button';
+    prev.className = 'ghost';
+    prev.textContent = '‹ Anterior';
+    prev.disabled = cur <= 0;
+    prev.addEventListener('click', () => goChapterPage(cur - 1));
+    const info = document.createElement('span');
+    info.className = 'pager-info';
+    info.textContent = page.kind === 'vol' ? `${page.label} · ${cur + 1} de ${total}` : page.label;
+    const next = document.createElement('button');
+    next.type = 'button';
+    next.className = 'ghost';
+    next.textContent = 'Siguiente ›';
+    next.disabled = cur >= total - 1;
+    next.addEventListener('click', () => goChapterPage(cur + 1));
+    el.append(prev, info, next);
+  }
+}
+
+function goChapterPage(i) {
+  const total = state.chapterPages.length;
+  const next = Math.min(Math.max(0, i), Math.max(0, total - 1));
+  if (next === state.chapterPage || !state.currentManga) return;
+  state.chapterPage = next;
+  renderChapters(state.currentManga)
+    .then(() => document.querySelector('.chapters-head')?.scrollIntoView({ block: 'start' }))
+    .catch(() => {});
+}
+
+function chapterRow(m, ch, prog) {
+  const label = chapterLabelOf(ch);
+  const when = ch.date_uploaded ? new Date(ch.date_uploaded * 1000).toLocaleDateString('es-MX') : '';
+  const cp = prog?.chapters?.[ch.key];
+  const row = document.createElement('div');
+  row.className = 'chapter'
+    + (ch.locked ? ' locked' : '')
+    + (cp?.finished ? ' read' : '');
+  row.dataset.chapterKey = ch.key;
+  row.dataset.smallBase = `${ch.language || ''} ${when}${ch.locked ? ' · no disponible en la fuente' : ''}`.trim();
+  row.innerHTML = `
+    <span class="ch-main"><span>${esc(label)}</span>
+    <small>${esc(row.dataset.smallBase)} ${esc(progressMarkOf(cp))}</small></span>
+    ${ch.locked ? '' : '<button type="button" class="dl-btn" title="Descargar para leer sin conexión">⬇</button>'}`;
+  if (!ch.locked) {
+    row.addEventListener('click', () => openChapter(m, ch, label));
+    const dlBtn = row.querySelector('.dl-btn');
+    dlBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const key = dlKeyOf(state.currentSource, m.key, ch.key);
+      try {
+        if (state.downloaded.has(key)) await deleteDownload(key);
+        else {
+          toast('Descargando capítulo…');
+          const r = await downloadChapter(state.currentSource, m, ch);
+          if (r === 'done') toast('Capítulo descargado: listo sin conexión');
+        }
+      } catch (err) {
+        toast(`Descarga fallida: ${err.message}`, true);
+      }
+    });
+  }
+  return row;
+}
+
+// Pinta SOLO la página vigente de la lista (nunca cientos de filas de golpe)
+// con su cabecera de volumen y los paginadores de arriba y abajo.
 async function renderChapters(m, prog) {
   prog = prog ?? await getProgressRec(state.currentSource, m.key);
   // Refrescar el conjunto de descargas de este manga
@@ -653,53 +820,26 @@ async function renderChapters(m, prog) {
   state.downloaded = new Set(
     myDownloads.map((d) => d.key).filter((k) => k.startsWith(`${state.currentSource}::`)),
   );
+  const pages = buildChapterPages(orderedChapters());
+  state.chapterPages = pages;
+  state.chapterPage = Math.min(Math.max(0, state.chapterPage), Math.max(0, pages.length - 1));
+  syncOrderUi();
+  renderPagers();
   const box = $('#chapters');
   box.innerHTML = '';
-  const chapters = m.chapters || [];
-  const withVolumes = chapters.some((c) => c.volume_number != null);
-  let lastVolume = undefined;
-  for (const ch of chapters) {
-    if (withVolumes && ch.volume_number !== lastVolume) {
-      lastVolume = ch.volume_number;
-      const h = document.createElement('div');
-      h.className = 'vol-header';
-      h.textContent = lastVolume != null ? `Volumen ${lastVolume}` : 'Sin volumen';
-      box.appendChild(h);
-    }
-    const label = chapterLabelOf(ch);
-    const when = ch.date_uploaded ? new Date(ch.date_uploaded * 1000).toLocaleDateString('es-MX') : '';
-    const cp = prog?.chapters?.[ch.key];
-    const row = document.createElement('div');
-    row.className = 'chapter'
-      + (ch.locked ? ' locked' : '')
-      + (cp?.finished ? ' read' : '');
-    row.dataset.chapterKey = ch.key;
-    row.dataset.smallBase = `${ch.language || ''} ${when}${ch.locked ? ' · no disponible en la fuente' : ''}`.trim();
-    row.innerHTML = `
-      <span class="ch-main"><span>${esc(label)}</span>
-      <small>${esc(row.dataset.smallBase)} ${esc(progressMarkOf(cp))}</small></span>
-      ${ch.locked ? '' : '<button type="button" class="dl-btn" title="Descargar para leer sin conexión">⬇</button>'}`;
-    if (!ch.locked) {
-      row.addEventListener('click', () => openChapter(m, ch, label));
-      const dlBtn = row.querySelector('.dl-btn');
-      dlBtn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const key = dlKeyOf(state.currentSource, m.key, ch.key);
-        try {
-          if (state.downloaded.has(key)) await deleteDownload(key);
-          else {
-            toast('Descargando capítulo…');
-            const r = await downloadChapter(state.currentSource, m, ch);
-            if (r === 'done') toast('Capítulo descargado: listo sin conexión');
-          }
-        } catch (err) {
-          toast(`Descarga fallida: ${err.message}`, true);
-        }
-      });
-    }
-    box.appendChild(row);
+  if (!pages.length) {
+    box.innerHTML = '<p class="hint">La fuente no devolvió capítulos.</p>';
+    refreshDlButtons();
+    return;
   }
-  if (!chapters.length) box.innerHTML = '<p class="hint">La fuente no devolvió capítulos.</p>';
+  const page = pages[state.chapterPage];
+  if (page.kind === 'vol') {
+    const h = document.createElement('div');
+    h.className = 'vol-header';
+    h.textContent = page.volume != null ? `Volumen ${page.volume}` : 'Sin volumen';
+    box.appendChild(h);
+  }
+  for (const ch of page.chapters) box.appendChild(chapterRow(m, ch, prog));
   refreshDlButtons();
 }
 
@@ -1050,13 +1190,28 @@ document.addEventListener('click', async (e) => {
   if (e.target.closest('[data-back-browse]')) show('view-browse');
   if (e.target.closest('[data-back-manga]')) {
     const wasLocal = state.reader?.local;
+    const readKey = !wasLocal ? state.reader?.chapter?.key : null;
     show(wasLocal ? 'view-sources' : 'view-manga');
-    // Al volver del lector, refrescar marcas de avance y descargas
-    if (!wasLocal && state.currentManga) refreshChapterMarks().catch(() => {});
+    // Al volver del lector, refrescar marcas de avance y descargas. Si el
+    // capítulo leído vive en OTRA página de la lista paginada, saltar a ella
+    // (re-pintar); si ya es la vigente, basta refrescar las marcas en sitio.
+    if (!wasLocal && state.currentManga) {
+      const pi = readKey ? chapterListPageOf(readKey) : -1;
+      if (pi >= 0 && pi !== state.chapterPage) {
+        state.chapterPage = pi;
+        renderChapters(state.currentManga).catch(() => {});
+      } else {
+        refreshChapterMarks().catch(() => {});
+      }
+    }
   }
 });
 
 $('#brand').addEventListener('click', () => show('view-sources'));
+
+$('#btn-order').addEventListener('click', () => {
+  setChapterOrder(pref.chapterOrder() === 'asc' ? 'desc' : 'asc');
+});
 
 $('#catalog-filter').addEventListener('input', (e) => renderCatalog(e.target.value));
 
@@ -1139,6 +1294,14 @@ function bindPrefSelect(selId, key, { def, apply } = {}) {
     apply: () => { syncFitUi(); if (state.reader && pref.readerMode() === 'paged') paintPaged(); },
   });
   bindPrefSelect('#set-preload', 'tinta.preloadCount', { def: '1' });
+  // Orden de capítulos: el <select> de Ajustes y el botón de la lista comparten
+  // setChapterOrder (persiste, reinicia la paginación y re-pinta si hay manga).
+  const ordSel = $('#set-chapter-order');
+  if (ordSel) {
+    ordSel.value = pref.chapterOrder();
+    ordSel.addEventListener('change', () => setChapterOrder(ordSel.value));
+  }
+  syncOrderUi();
   if ('serviceWorker' in navigator) {
     // Si un SW nuevo toma el control, recargar una vez para estrenar todo el
     // cascaron nuevo (evita actualizaciones "a medias" en iOS).
