@@ -46,6 +46,12 @@
       <option value="llenar">Llenar pantalla (sin bordes, recorta)</option>
     </select>
   </label>
+  <label>Orden de la lista de capítulos
+    <select id="set-chapter-order">
+      <option value="asc">Del más viejo al más nuevo</option>
+      <option value="desc">Del más nuevo al más viejo</option>
+    </select>
+  </label>
   <label>Precargar capítulos siguientes al leer
     <select id="set-preload">
       <option value="0">No precargar</option>
@@ -95,8 +101,13 @@
   <section id="view-manga" hidden>
     <button class="ghost back" data-back-browse type="button">← Resultados</button>
     <div id="manga-detail"></div>
-    <h3>Capítulos</h3>
+    <div class="chapters-head">
+      <h3>Capítulos</h3>
+      <button id="btn-order" class="ghost" type="button">Orden: viejo → nuevo</button>
+    </div>
+    <div id="chapters-pager-top" class="pager"></div>
     <div id="chapters" class="chapters"></div>
+    <div id="chapters-pager-bottom" class="pager"></div>
   </section>
 
   <section id="view-reader" hidden>
