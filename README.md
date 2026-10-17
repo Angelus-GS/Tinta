@@ -26,7 +26,11 @@ Para usarla fuera de `localhost` hace falta desplegar el proxy
 precarga del capítulo siguiente, la importación de CBZ locales, el
 progreso de lectura y el lector por páginas con dirección configurable
 — todo verificado en Chromium en ambos transportes, incluida la lectura
-completa de capítulos con la red bloqueada.
+completa de capítulos con la red bloqueada. La **ronda 2 de mejoras**
+(v1.6.0) añadió los **favoritos** con su sección en la vista inicial y
+el **lector por páginas a pantalla completa**: sin barras ni cabecera,
+con encuadre a elegir — *Ajustar* la página completa o *Llenar* la
+pantalla sin bordes — y controles que aparecen con un toque central.
 
 ## Fuentes de aceptación
 
@@ -62,6 +66,7 @@ escribir el host completo.
 | 1 ✅ | MVP MangaDex de principio a fin (instalar → buscar → leer), verificado en Chromium real con JSPI |
 | 2 ✅ | Weeb Central: módulo `html` completo (parser + selectores CSS en JS puro), verificado en Chromium en ambos transportes |
 | 3 ✅ | Biblioteca, descargas offline (con precarga del siguiente), importar CBZ, progreso y lector por páginas LTR/RTL |
+| R2 ✅ | Favoritos en el home y lector por páginas a pantalla completa (encuadre Ajustar/Llenar, controles por toque central) |
 | 4 | Más fuentes del catálogo Aidoku, EPUB/PDF locales (posterior) |
 
 ## Límites honestos
