@@ -40,6 +40,12 @@
       <option value="rtl">Derecha → izquierda (manga)</option>
     </select>
   </label>
+  <label>Encuadre de página (modo páginas, pantalla completa)
+    <select id="set-page-fit">
+      <option value="ajustar">Ajustar (página completa visible)</option>
+      <option value="llenar">Llenar pantalla (sin bordes, recorta)</option>
+    </select>
+  </label>
   <label>Precargar capítulos siguientes al leer
     <select id="set-preload">
       <option value="0">No precargar</option>
@@ -57,6 +63,10 @@
   <section id="view-sources">
     <h2>Fuentes instaladas</h2>
     <div id="installed" class="source-list"><p class="hint">Ninguna todavía. Instala MangaDex desde el catálogo.</p></div>
+    <div id="favorites-wrap" hidden>
+      <h2>Favoritos</h2>
+      <div id="favorites" class="grid"></div>
+    </div>
     <h2>Biblioteca</h2>
     <div id="library" class="grid"><p class="hint">Tu biblioteca está vacía: abre un manga y toca «Añadir a la biblioteca».</p></div>
     <div class="import-row">
@@ -95,6 +105,13 @@
     <div class="reader-bar">
       <button id="btn-mode" class="ghost" type="button">Modo: Scroll</button>
       <span id="page-indicator" class="pill"></span>
+    </div>
+    <div id="reader-controls" class="reader-controls" hidden>
+      <button class="ghost" data-back-manga type="button">← Capítulos</button>
+      <span id="rc-title" class="rc-title"></span>
+      <span id="rc-indicator" class="pill"></span>
+      <button id="btn-rc-fit" class="ghost" type="button">Encuadre: Ajustar</button>
+      <button id="btn-rc-mode" class="ghost" type="button">Modo: Páginas</button>
     </div>
     <div id="pages" class="pages"></div>
   </section>
