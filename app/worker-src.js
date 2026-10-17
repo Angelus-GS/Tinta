@@ -24,7 +24,7 @@ const METHODS = ['GET', 'POST', 'PUT', 'HEAD', 'DELETE', 'PATCH', 'OPTIONS', 'CO
 let config = { proxyBase: '', languages: ['en', 'es'] };
 // Debe coincidir con APP_VERSION en main.js: la UI los compara y avisa si
 // la actualización llegó a medias al dispositivo.
-const HOST_BUILD = '1.5.0';
+const HOST_BUILD = '1.6.0';
 const sources = new Map(); // sourceId -> ctx
 
 function effectiveUrl(url) {
