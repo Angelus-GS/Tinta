@@ -123,9 +123,48 @@ input[type="search"], input[type="url"], select {
   display: block; margin: 0 auto; max-width: 100%;
   max-height: calc(100vh - 215px); object-fit: contain; background: #1a1a1e;
 }
+.pages.paged img.page-img.fit-ajustar { object-fit: contain; }
+.pages.paged img.page-img.fit-llenar { object-fit: cover; }
 .zone { position: absolute; top: 0; bottom: 0; width: 38%; z-index: 2; cursor: pointer; }
 .zone.prev { left: 0; }
 .zone.next { right: 0; }
+.zone.center { left: 38%; width: 24%; }
+/* --- Favoritos en el home --- */
+.card.fav-card { position: relative; }
+.fav-star {
+  position: absolute; top: 6px; left: 6px; z-index: 2;
+  background: rgba(14,14,16,.82); border: 1px solid #4d4423; border-radius: 999px;
+  padding: 2px 7px; font-size: .78rem; line-height: 1.4;
+}
+#btn-fav.fav-on { color: var(--accent); border-color: #4d4423; }
+/* --- Lector inmersivo: modo por páginas a pantalla completa --- */
+body.immersive { overflow: hidden; background: #000; }
+body.immersive header { display: none; }
+body.immersive main { max-width: none; margin: 0; padding: 0; }
+#view-reader.immersive {
+  position: fixed; inset: 0; z-index: 40; background: #000;
+}
+#view-reader.immersive > .back,
+#view-reader.immersive > h3,
+#view-reader.immersive > .reader-bar { display: none; }
+#view-reader.immersive #pages { position: absolute; inset: 0; margin: 0; }
+#view-reader.immersive .paged-stage { position: absolute; inset: 0; }
+#view-reader.immersive img.page-img {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  max-width: none; max-height: none; margin: 0; background: #000;
+}
+.reader-controls {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 6;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: calc(8px + env(safe-area-inset-top)) 12px 14px;
+  background: linear-gradient(rgba(0,0,0,.88), rgba(0,0,0,0));
+}
+.reader-controls[hidden] { display: none; }
+.reader-controls .rc-title {
+  flex: 1; min-width: 60px; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; font-size: .9rem;
+}
+.reader-controls button { padding: 6px 10px; font-size: .82rem; background: rgba(20,20,24,.85); }
 .pages img { display: block; width: min(100%, 760px); margin: 0 auto 6px; background: #1a1a1e; }
 #toast {
   position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
