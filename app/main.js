@@ -9,7 +9,7 @@ window.__tintaBooted = false;
 // Versión visible de la app: súbela (y la cache del SW) en cada publicación.
 // El host reporta la suya (HOST_BUILD en worker-src.js); si difieren, la
 // actualización llegó a medias a este dispositivo.
-const APP_VERSION = '1.8.0';
+const APP_VERSION = '1.8.1';
 
 const CATALOG_BASE = 'https://aidoku-community.github.io/sources/';
 const ANCHORS = ['multi.mangadex', 'en.weebcentral'];
@@ -271,6 +271,7 @@ async function renderLibrary() {
     contWrap.hidden = !entries.length;
     contRail.innerHTML = '';
     for (const p of entries) {
+      const srcName = state.installed.get(p.sourceId)?.name || p.sourceId;
       const where = p.lastTotal
         ? `${p.lastChapterLabel || ''} · pág. ${(p.lastPage ?? 0) + 1} de ${p.lastTotal}`
         : `${p.lastChapterLabel || ''} · pág. ${(p.lastPage ?? 0) + 1}`;
@@ -280,7 +281,7 @@ async function renderLibrary() {
         <button type="button" class="lib-x" title="Quitar de «Seguir leyendo» (no borra tu avance)">✕</button>
         ${p.cover ? `<img src="${esc(imgUrl(p.cover))}" data-direct="${esc(p.cover)}" alt="" loading="lazy">` : '<img alt="">'}
         <div class="t">${esc(p.title || p.mangaKey)}</div>
-        <div class="sub">${esc(where)}</div>`;
+        <div class="sub">${esc(srcName)}<br>${esc(where)}</div>`;
       wireImgFallbacks(card);
       card.querySelector('.lib-x').addEventListener('click', (e) => {
         e.stopPropagation();
@@ -592,18 +593,34 @@ function saveProgress(sourceId, manga, chapter, page, total) {
 }
 
 // --- Descargas offline ---------------------------------------------------------
-async function fetchImageBlob(url) {
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Una página que no baja no debe tumbar el capítulo entero al primer fallo:
+// cada página se reintenta (proxy → directo → proxy otra vez, con pausas
+// crecientes) y solo si agota los intentos se aborta, con un error que dice
+// QUÉ página, de QUÉ host y POR QUÉ (HTTP xxx o error de red). Ese detalle
+// es la pista clave para diagnosticar un CDN de scanlation que aún no está
+// en la lista permitida del proxy: antes el usuario solo veía un genérico
+// «Descarga fallida» sin forma de saber qué dominio faltaba.
+async function fetchPageBlob(url, pageNo) {
   const viaProxy = imgUrl(url);
-  try {
-    const r = await fetch(viaProxy);
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return await r.blob();
-  } catch (err) {
-    if (viaProxy === url) throw err;
-    const r = await fetch(url);
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return await r.blob();
+  const attempts = [...new Set([viaProxy, url, viaProxy])];
+  let lastErr = null;
+  for (let t = 0; t < attempts.length; t++) {
+    try {
+      const r = await fetch(attempts[t]);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.blob();
+    } catch (err) {
+      lastErr = err;
+      if (t < attempts.length - 1) await sleepMs(350 * (t + 1));
+    }
   }
+  let host = url;
+  try { host = new URL(url).host; } catch { /* URL rara: se reporta tal cual */ }
+  const msg = lastErr?.message || '';
+  const reason = /^HTTP \d+$/.test(msg) ? msg : `error de red (${msg || 'sin detalle'})`;
+  throw new Error(`página ${pageNo} · ${host} · ${reason}`);
 }
 
 async function downloadChapter(sourceId, manga, chapter, { preload = false } = {}) {
@@ -619,7 +636,7 @@ async function downloadChapter(sourceId, manga, chapter, { preload = false } = {
     state.downloading.set(key, { done: 0, total: urls.length });
     let size = 0;
     for (let i = 0; i < urls.length; i++) {
-      const blob = await fetchImageBlob(urls[i]);
+      const blob = await fetchPageBlob(urls[i], i + 1);
       size += blob.size;
       await idb.putPage({ key: `${key}::${padIdx(i)}`, dlKey: key, index: i, blob });
       const d = state.downloading.get(key);
@@ -657,6 +674,21 @@ function refreshDlButtons() {
     const key = dlKeyOf(state.currentSource, state.currentManga.key, chKey);
     const btn = row.querySelector('.dl-btn');
     if (!btn) return;
+    // Capítulo bloqueado en la fuente (MangaDex: isUnavailable): el botón se
+    // queda deshabilitado SIEMPRE, con el motivo en el título. Antes esta
+    // función lo reactivaba al repintar (caía en la rama genérica) y el toque
+    // moría dentro de downloadChapter contra la API, con error crudo.
+    const ch = (state.currentChapters || []).find((c) => c.key === chKey);
+    if (ch?.locked) {
+      btn.textContent = '⬇';
+      btn.classList.remove('done');
+      btn.disabled = true;
+      btn.title = 'No disponible en esta fuente';
+      row.classList.remove('downloaded');
+      const expB = row.querySelector('.exp-btn');
+      if (expB) expB.hidden = true;
+      return;
+    }
     if (state.downloaded.has(key)) {
       btn.textContent = '✓';
       btn.classList.add('done');
@@ -824,6 +856,7 @@ async function openManga(mangaStub, opts = {}) {
       ${m.cover ? `<img src="${esc(imgUrl(m.cover))}" data-direct="${esc(m.cover)}" alt="">` : ''}
       <div class="info">
         <h2>${esc(m.title)}</h2>
+        <p class="tags">Fuente: ${esc(state.installed.get(state.currentSource)?.name || state.currentSource)}</p>
         <p class="tags">${esc((m.authors || []).join(', '))} · ${esc(status)} · ${esc(rating)}</p>
         <p class="tags">${esc((m.tags || []).join(' · '))}</p>
         <p class="desc">${esc(m.description || '')}</p>
@@ -997,7 +1030,9 @@ function chapterRow(m, ch, prog) {
   row.innerHTML = `
     <span class="ch-main"><span>${esc(label)}</span>
     <small>${esc(row.dataset.smallBase)} ${esc(progressMarkOf(cp))}</small></span>
-    ${ch.locked ? '' : '<span class="ch-actions"><button type="button" class="exp-btn" title="Exportar el capítulo descargado como archivo CBZ" hidden>CBZ</button><button type="button" class="dl-btn" title="Descargar para leer sin conexión">⬇</button></span>'}`;
+    ${ch.locked
+    ? '<span class="ch-actions"><button type="button" class="dl-btn" disabled title="No disponible en esta fuente">⬇</button></span>'
+    : '<span class="ch-actions"><button type="button" class="exp-btn" title="Exportar el capítulo descargado como archivo CBZ" hidden>CBZ</button><button type="button" class="dl-btn" title="Descargar para leer sin conexión">⬇</button></span>'}`;
   if (!ch.locked) {
     row.addEventListener('click', () => openChapter(m, ch, label));
     const dlBtn = row.querySelector('.dl-btn');
@@ -1467,7 +1502,8 @@ function renderReader() {
     stage.innerHTML = `
       <div class="zone prev" title="Anterior"></div>
       <div class="zone center" title="Controles"></div>
-      <div class="zone next" title="Siguiente"></div>`;
+      <div class="zone next" title="Siguiente"></div>
+      <div class="page-loading" hidden><span class="pg-spinner"></span></div>`;
     stage.querySelector('.zone.prev').addEventListener('click', () => zoneNav('prev'));
     stage.querySelector('.zone.next').addEventListener('click', () => zoneNav('next'));
     stage.querySelector('.zone.center').addEventListener('click', () =>
@@ -1477,6 +1513,14 @@ function renderReader() {
   } else {
     r.items.forEach((item, i) => {
       const img = document.createElement('img');
+      // Oculta hasta `load`: si no, Safari enseña su glifo de imagen al
+      // centro mientras la página baja por el proxy (mismo síntoma que en
+      // modo paginado). La opacidad no afecta al IntersectionObserver.
+      img.classList.add('img-wait');
+      img.addEventListener('load', () => img.classList.remove('img-wait'));
+      img.addEventListener('error', () => {
+        if (!item.original || img.src === item.original) img.classList.remove('img-wait');
+      });
       img.src = item.src;
       if (item.original) armImgFallback(img, item.original);
       img.alt = `Página ${i + 1}`;
@@ -1501,19 +1545,83 @@ function renderReader() {
   updateIndicator();
 }
 
+// --- Precarga de páginas vecinas (modo paginado) ------------------------------
+// Causa del «icono al centro en cada avance»: paintPaged creaba un <img>
+// nuevo por página y lo mostraba vacío mientras bajaba por el proxy; Safari
+// pinta en ese hueco su glifo de imagen. Doble arreglo: (1) precargar con
+// Image() fuera de pantalla las páginas vecinas en orden de lectura (las 3
+// siguientes y la anterior), con la misma red de seguridad proxy→directo;
+// (2) pintar sin revelar hasta el `load` de la página nueva, dejando la
+// anterior visible mientras tanto. Si la pedida ya estaba precargada, el
+// cambio es instantáneo y no espera red.
+function preloadPagedAround(r, idx) {
+  if (!r.preload) r.preload = new Map();
+  for (const i of [idx + 1, idx + 2, idx + 3, idx - 1]) {
+    if (i < 0 || i >= r.items.length || r.preload.has(i)) continue;
+    const item = r.items[i];
+    const img = new Image();
+    const entry = { img, loaded: false };
+    r.preload.set(i, entry);
+    img.addEventListener('load', () => { entry.loaded = true; });
+    img.addEventListener('error', () => {
+      if (item.original && img.src !== item.original) img.src = item.original;
+    });
+    img.src = item.src;
+    if (img.complete && img.naturalWidth > 0) entry.loaded = true;
+  }
+}
+
+function setPageLoading(v) {
+  const el = document.querySelector('#pages .paged-stage .page-loading');
+  if (el) el.hidden = !v;
+}
+
 function paintPaged() {
   const r = state.reader;
   const stage = $('#pages .paged-stage');
-  if (!stage) return;
-  stage.querySelector('img.page-img')?.remove();
-  const item = r.items[r.idx];
-  const img = document.createElement('img');
-  img.className = `page-img fit-${pref.pageFit()}`;
-  img.src = item.src;
-  if (item.original) armImgFallback(img, item.original);
-  img.alt = `Página ${r.idx + 1}`;
-  stage.appendChild(img);
+  if (!r || !stage) return;
+  const idx = r.idx;
+  const item = r.items[idx];
+  const token = (r.paintToken = (r.paintToken || 0) + 1);
+  if (r.preload?.get(idx)?.loaded) {
+    // Ya bajó en la precarga: se ADOPTA ese mismo elemento (ya está
+    // `complete`, con su bitmap listo) en vez de crear un <img> nuevo que
+    // tardaría un tick en reportarse cargado. Cambio instantáneo, sin red.
+    const img = r.preload.get(idx).img;
+    r.preload.delete(idx);
+    img.className = `page-img fit-${pref.pageFit()}`;
+    img.alt = `Página ${idx + 1}`;
+    if (item.original) armImgFallback(img, item.original);
+    stage.querySelectorAll('img.page-img').forEach((o) => { if (o !== img) o.remove(); });
+    stage.appendChild(img);
+    setPageLoading(false);
+  } else {
+    // La página anterior se queda visible hasta que la nueva cargue; la
+    // nueva espera invisible (fuera de flujo) con su indicador discreto.
+    const img = document.createElement('img');
+    img.className = `page-img fit-${pref.pageFit()}`;
+    img.alt = `Página ${idx + 1}`;
+    img.classList.add('pg-wait');
+    const swap = () => {
+      if (state.reader !== r || r.paintToken !== token) { img.remove(); return; }
+      stage.querySelectorAll('img.page-img').forEach((o) => { if (o !== img) o.remove(); });
+      img.classList.remove('pg-wait');
+      setPageLoading(false);
+    };
+    img.addEventListener('load', swap);
+    img.addEventListener('error', () => {
+      // Sin red de seguridad pendiente (sin original o ya en directo): se
+      // revela lo que haya en vez de dejar el escenario colgado.
+      if (!item.original || img.src === item.original) swap();
+    });
+    if (item.original) armImgFallback(img, item.original);
+    stage.appendChild(img);
+    img.src = item.src;
+    if (img.complete && img.naturalWidth > 0) swap();
+    else setPageLoading(true);
+  }
   updateIndicator();
+  preloadPagedAround(r, idx);
 }
 
 function updateIndicator() {
