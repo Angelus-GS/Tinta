@@ -65,6 +65,61 @@ input[type="search"], input[type="url"], select {
 }
 #search-form { display: flex; gap: 8px; margin: 10px 0; }
 #search-form input { flex: 1; }
+/* --- Ronda 4: búsqueda global, novedades, seguir leyendo --- */
+#global-search-form { display: flex; gap: 8px; margin: 10px 0; }
+#global-search-form input { flex: 1; }
+.global-group { margin-bottom: 6px; }
+.global-head { color: var(--accent); font-size: .95rem; }
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 18px 0 10px; }
+.section-head h2 { margin: 0; }
+.new-badge {
+  position: absolute; top: 6px; right: 6px; z-index: 3;
+  background: var(--accent); color: #191204; border-radius: 999px;
+  padding: 2px 8px; font-size: .78rem; font-weight: 700; line-height: 1.5;
+}
+.card.lib-card .new-badge { right: 38px; }
+.rail {
+  display: flex; gap: 12px; overflow-x: auto; padding-bottom: 6px;
+  scroll-snap-type: x proximity;
+}
+.rail .card { flex: 0 0 132px; scroll-snap-align: start; }
+.card.cont-card { position: relative; }
+/* --- Ronda 4: ir al capítulo, rango, exportar CBZ --- */
+.chapters-tools {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0 2px;
+}
+#goto-form { display: flex; gap: 8px; align-items: center; }
+#goto-form input { width: 130px; }
+input[type="number"] {
+  background: var(--panel); color: var(--text); border: 1px solid #33333b;
+  border-radius: 8px; padding: 9px 12px; font-size: .95rem;
+}
+#range-panel {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  background: var(--panel); border: 1px solid #26262c; border-radius: var(--radius);
+  padding: 10px 12px; margin: 8px 0;
+}
+#range-panel[hidden] { display: none; }
+#range-panel label { font-size: .88rem; color: var(--muted); }
+#range-panel input { width: 92px; margin-left: 4px; }
+.ch-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.exp-btn {
+  background: var(--panel2); color: var(--accent); border: 1px solid #4d4423;
+  border-radius: 8px; padding: 5px 10px; font-size: .8rem; font-weight: 700;
+}
+.chapter.highlight {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.settings-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 6px 0 10px; }
+/* --- Ronda 4: fondo del lector --- */
+#view-reader.bg-papel { background: #f5ecd7; color: #221d13; }
+#view-reader.bg-blanco { background: #ffffff; color: #161616; }
+#view-reader.bg-papel .pages img, #view-reader.bg-blanco .pages img { background: #e8e2d2; }
+#view-reader.bg-papel.immersive { background: #f5ecd7; }
+#view-reader.bg-blanco.immersive { background: #ffffff; }
+#view-reader.bg-papel.immersive img.page-img { background: #f5ecd7; }
+#view-reader.bg-blanco.immersive img.page-img { background: #ffffff; }
 .tabs { display: flex; gap: 8px; margin: 8px 0 12px; flex-wrap: wrap; }
 .tabs button { background: var(--panel2); color: var(--text); border: 1px solid #33333b; font-weight: 500; }
 .tabs button.active { background: var(--accent); color: #191204; border-color: var(--accent); }
