@@ -196,6 +196,23 @@ input[type="number"] {
 .zone.prev { left: 0; }
 .zone.next { right: 0; }
 .zone.center { left: 38%; width: 24%; }
+/* Sin glifo de «imagen cargando»: la página nueva espera invisible hasta
+   su load (en paginado, fuera de flujo sobre el escenario, con la anterior
+   cubriendo el hueco; en scroll, solo opacidad para no romper el observer) */
+.pages img { transition: opacity .15s ease; }
+#pages img.img-wait { opacity: 0; }
+.pages.paged img.page-img.pg-wait { position: absolute; inset: 0; margin: auto; opacity: 0; }
+.pages.paged .page-loading {
+  position: absolute; inset: 0; z-index: 3; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+}
+.pages.paged .page-loading[hidden] { display: none; }
+.pg-spinner {
+  width: 34px; height: 34px; border-radius: 50%;
+  border: 3px solid rgba(255,255,255,.16); border-top-color: rgba(255,255,255,.75);
+  animation: pgspin .8s linear infinite;
+}
+@keyframes pgspin { to { transform: rotate(360deg); } }
 /* --- Favoritos en el home --- */
 .card.fav-card { position: relative; }
 .fav-star {
