@@ -9,7 +9,7 @@ window.__tintaBooted = false;
 // Versión visible de la app: súbela (y la cache del SW) en cada publicación.
 // El host reporta la suya (HOST_BUILD en worker-src.js); si difieren, la
 // actualización llegó a medias a este dispositivo.
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.8.0';
 
 const CATALOG_BASE = 'https://aidoku-community.github.io/sources/';
 const ANCHORS = ['multi.mangadex', 'en.weebcentral'];
@@ -23,6 +23,8 @@ const pref = {
   // Orden de la lista de capítulos: 'asc' = del más viejo al más nuevo
   // (defecto, como pidió el usuario) · 'desc' = del más nuevo al más viejo.
   chapterOrder: () => localStorage.getItem('tinta.chapterOrder') || 'asc',
+  // Fondo del lector: 'negro' (defecto) · 'papel' (cálido) · 'blanco'.
+  readerBg: () => localStorage.getItem('tinta.readerBg') || 'negro',
   preloadCount: () => {
     const n = parseInt(localStorage.getItem('tinta.preloadCount') ?? '1', 10);
     return Number.isFinite(n) ? Math.min(3, Math.max(0, n)) : 1;
@@ -209,6 +211,46 @@ function renderCatalog(filter = '') {
 }
 
 // --- Biblioteca --------------------------------------------------------------
+// Entradas del riel «Seguir leyendo» descartadas a mano (✕): se recuerda el
+// updatedAt descartado; si el avance cambia (sigues leyendo), la entrada
+// reaparece sola. Quitar la tarjeta NUNCA borra el avance del manga.
+function continueDismissed() {
+  try { return JSON.parse(localStorage.getItem('tinta.continueDismissed') || '{}'); }
+  catch { return {}; }
+}
+function dismissContinue(key, updatedAt) {
+  const d = continueDismissed();
+  d[key] = updatedAt;
+  localStorage.setItem('tinta.continueDismissed', JSON.stringify(d));
+}
+
+// Abrir desde el riel: libros locales van a su lector; series de una fuente
+// pasan por su detalle (carga capítulos frescos) y de ahí al capítulo
+// guardado, que openChapter retoma en la página exacta.
+async function openFromContinue(p) {
+  if (p.sourceId === 'local') {
+    const book = await idb.getLocalBook(p.mangaKey);
+    if (book) { await openLocalBook(book); return; }
+    toast('Ese libro local ya no está en este dispositivo', true);
+    return;
+  }
+  if (!state.installed.has(p.sourceId)) {
+    toast('Esa fuente no está instalada en este dispositivo', true);
+    return;
+  }
+  state.currentSource = p.sourceId;
+  // Con registro en biblioteca se entra por su snapshot (Manga completo,
+  // re-serializable); sin registro solo queda el stub mínimo y el detalle
+  // puede no cargar capítulos frescos (límite conocido del stub).
+  const libRec = await idb.getLibrary(p.key);
+  if (libRec) await openManga(libRec.stub, { snapshot: libRec.snapshot });
+  else await openManga({ key: p.mangaKey, title: p.title, cover: p.cover });
+  const ch = state.currentChapters.find((c) => c.key === p.lastChapterKey);
+  if (ch && !ch.locked && state.currentManga) {
+    await openChapter(state.currentManga, ch, chapterLabelOf(ch));
+  }
+}
+
 async function renderLibrary() {
   const box = $('#library');
   if (!box) return;
@@ -216,6 +258,39 @@ async function renderLibrary() {
     idb.allLibrary(), idb.allLocalBooks(), idb.allProgress(),
   ]);
   const progByKey = new Map(progress.map((p) => [p.key, p]));
+  // Riel «Seguir leyendo»: las últimas lecturas de TODAS las series (del
+  // registro de avance de cada una), la más reciente primero, máx. 12.
+  const contWrap = $('#continue-wrap');
+  const contRail = $('#continue-rail');
+  if (contWrap && contRail) {
+    const dismissed = continueDismissed();
+    const entries = progress
+      .filter((p) => p.lastChapterKey && dismissed[p.key] !== p.updatedAt)
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+      .slice(0, 12);
+    contWrap.hidden = !entries.length;
+    contRail.innerHTML = '';
+    for (const p of entries) {
+      const where = p.lastTotal
+        ? `${p.lastChapterLabel || ''} · pág. ${(p.lastPage ?? 0) + 1} de ${p.lastTotal}`
+        : `${p.lastChapterLabel || ''} · pág. ${(p.lastPage ?? 0) + 1}`;
+      const card = document.createElement('div');
+      card.className = 'card cont-card';
+      card.innerHTML = `
+        <button type="button" class="lib-x" title="Quitar de «Seguir leyendo» (no borra tu avance)">✕</button>
+        ${p.cover ? `<img src="${esc(imgUrl(p.cover))}" data-direct="${esc(p.cover)}" alt="" loading="lazy">` : '<img alt="">'}
+        <div class="t">${esc(p.title || p.mangaKey)}</div>
+        <div class="sub">${esc(where)}</div>`;
+      wireImgFallbacks(card);
+      card.querySelector('.lib-x').addEventListener('click', (e) => {
+        e.stopPropagation();
+        dismissContinue(p.key, p.updatedAt);
+        renderLibrary();
+      });
+      card.addEventListener('click', () => { openFromContinue(p).catch((err) => toast(err.message, true)); });
+      contRail.appendChild(card);
+    }
+  }
   // Sección «Favoritos» del home: los registros de la biblioteca con la
   // marca favorite, con portada; tocar uno abre su detalle (snapshot).
   const favWrap = $('#favorites-wrap');
@@ -230,6 +305,7 @@ async function renderLibrary() {
       card.className = 'card fav-card';
       card.innerHTML = `
         <span class="fav-star" title="Favorito">⭐</span>
+        ${rec.newChapters ? `<span class="new-badge" title="Capítulos nuevos sin ver">+${rec.newChapters}</span>` : ''}
         ${rec.cover ? `<img src="${esc(imgUrl(rec.cover))}" data-direct="${esc(rec.cover)}" alt="" loading="lazy">` : '<img alt="">'}
         <div class="t">${esc(rec.title)}</div>
         <div class="sub">${esc(srcName)}</div>`;
@@ -250,6 +326,7 @@ async function renderLibrary() {
     card.className = 'card lib-card';
     card.innerHTML = `
       <button type="button" class="lib-x" title="Quitar de la biblioteca">✕</button>
+      ${rec.newChapters ? `<span class="new-badge" title="Capítulos nuevos sin ver">+${rec.newChapters}</span>` : ''}
       ${rec.cover ? `<img src="${esc(imgUrl(rec.cover))}" data-direct="${esc(rec.cover)}" alt="" loading="lazy">` : '<img alt="">'}
       <div class="t">${esc(rec.title)}</div>
       <div class="sub">${esc(srcName)}${cont ? `<br>${esc(cont)}` : ''}</div>`;
@@ -313,6 +390,9 @@ async function toggleLibrary() {
       stub: { key: m.key, title: m.title, cover: m.cover },
       snapshot: m,
       addedAt: Date.now(),
+      knownChapterCount: state.currentChapters.length,
+      knownLatestChapterKey: state.currentChapters[0]?.key ?? null,
+      newChapters: 0,
     });
     toast('Añadido a la biblioteca');
   }
@@ -347,6 +427,9 @@ async function toggleFavorite() {
       stub: { key: m.key, title: m.title, cover: m.cover },
       snapshot: m,
       addedAt: Date.now(),
+      knownChapterCount: state.currentChapters.length,
+      knownLatestChapterKey: state.currentChapters[0]?.key ?? null,
+      newChapters: 0,
     };
   }
   rec.favorite = !rec.favorite;
@@ -363,6 +446,114 @@ async function refreshFavButton() {
   const fav = !!rec?.favorite;
   btn.textContent = fav ? '⭐ Favorito' : '☆ Favorito';
   btn.classList.toggle('fav-on', fav);
+}
+
+// --- Novedades (capítulos nuevos en biblioteca/favoritos) -------------------
+// Compara la lista de capítulos de cada serie guardada contra lo «conocido»
+// (conteo + capítulo más reciente, sembrados al guardar en biblioteca y al
+// abrir el detalle). La diferencia se acumula en rec.newChapters y se pinta
+// como insignia +N en el home hasta que el detalle se abre. En serie: en el
+// transporte síncrono cada consulta ocupa el worker hasta volver; el fallo
+// de una serie se traga en silencio y no aborta a las demás.
+let updateCheckRunning = false;
+async function checkForUpdates({ manual = false } = {}) {
+  if (updateCheckRunning) return 0;
+  updateCheckRunning = true;
+  const btn = $('#btn-check-updates');
+  if (btn) { btn.disabled = true; btn.textContent = 'Buscando novedades…'; }
+  let seriesWithNews = 0;
+  try {
+    const lib = await idb.allLibrary();
+    for (const rec of lib) {
+      if (!state.installed.has(rec.sourceId)) continue;
+      try {
+        // El update necesita el Manga COMPLETO (encManga exige campos
+        // numéricos no opcionales: status, content_rating, viewer…): el
+        // stub guardado {key,title,cover} no basta y el codec estalla con
+        // «Cannot convert undefined to a BigInt». El snapshot sí es completo.
+        const m = await call({ type: 'update', sourceId: rec.sourceId, manga: rec.snapshot || rec.stub });
+        const chapters = m.chapters || [];
+        const known = rec.knownChapterCount;
+        if (known == null) {
+          rec.knownChapterCount = chapters.length;
+          rec.knownLatestChapterKey = chapters[0]?.key ?? null;
+          rec.newChapters = rec.newChapters || 0;
+        } else if (chapters.length > known) {
+          rec.newChapters = (rec.newChapters || 0) + (chapters.length - known);
+          rec.knownChapterCount = chapters.length;
+          rec.knownLatestChapterKey = chapters[0]?.key ?? rec.knownLatestChapterKey;
+          seriesWithNews++;
+        } else if (chapters.length < known) {
+          // La fuente recortó capítulos: resembrar sin anunciar «novedad».
+          rec.knownChapterCount = chapters.length;
+          rec.knownLatestChapterKey = chapters[0]?.key ?? null;
+        }
+        rec.snapshot = m;
+        rec.title = m.title || rec.title;
+        rec.cover = m.cover ?? rec.cover;
+        await idb.putLibrary(rec);
+      } catch (err) { /* serie intratable ahora mismo: se reintentará otro día */
+        console.warn('Novedades sin revisar:', rec.key, err?.message);
+      }
+    }
+  } finally {
+    localStorage.setItem('tinta.lastUpdateCheck', String(Date.now()));
+    updateCheckRunning = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Buscar novedades'; }
+    await renderLibrary();
+  }
+  if (manual) {
+    toast(seriesWithNews
+      ? `Novedades en ${seriesWithNews} serie(s) de tu biblioteca`
+      : 'Sin novedades: tu biblioteca está al día');
+  }
+  return seriesWithNews;
+}
+
+// --- Búsqueda global ----------------------------------------------------------
+// Un solo buscador para todas las fuentes instaladas: consulta en serie (en
+// el transporte síncrono cada llamada ocupa el worker hasta volver), pinta
+// el progreso por fuente («Buscando en X…») y agrupa los resultados bajo la
+// cabecera de su fuente; tocar una tarjeta abre el detalle en esa fuente.
+async function runGlobalSearch(query) {
+  const box = $('#global-results');
+  box.innerHTML = '';
+  const sources = [...state.installed.values()];
+  if (!sources.length) {
+    box.innerHTML = '<p class="hint">No hay fuentes instaladas todavía: instala una desde el catálogo de abajo.</p>';
+    return;
+  }
+  for (const s of sources) {
+    const group = document.createElement('div');
+    group.className = 'global-group';
+    group.innerHTML = `<h3 class="global-head">Buscando en ${esc(s.name)}…</h3><div class="grid"></div>`;
+    box.appendChild(group);
+    const head = group.querySelector('.global-head');
+    const grid = group.querySelector('.grid');
+    try {
+      const result = await call({ type: 'search', sourceId: s.id, query, page: 1 });
+      head.textContent = `${s.name} — ${result.entries.length} resultado(s)`;
+      if (!result.entries.length) {
+        grid.innerHTML = '<p class="hint">Sin resultados en esta fuente.</p>';
+      }
+      for (const m of result.entries) {
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = `
+          ${m.cover ? `<img src="${esc(imgUrl(m.cover))}" data-direct="${esc(m.cover)}" alt="" loading="lazy">` : '<img alt="">'}
+          <div class="t">${esc(m.title)}</div>`;
+        const cimg = card.querySelector('img[data-direct]');
+        if (cimg) armImgFallback(cimg, m.cover);
+        card.addEventListener('click', () => {
+          state.currentSource = s.id;
+          openManga(m).catch((err) => toast(err.message, true));
+        });
+        grid.appendChild(card);
+      }
+    } catch (err) {
+      head.textContent = `${s.name} — ⚠️ ${err.message}`;
+    }
+  }
 }
 
 // --- Progreso de lectura ------------------------------------------------------
@@ -388,6 +579,11 @@ function saveProgress(sourceId, manga, chapter, page, total) {
     rec.lastChapterKey = chapter.key;
     rec.lastChapterLabel = chapterLabelOf(chapter);
     rec.lastPage = page;
+    // Para el riel «Seguir leyendo» del home: qué serie es y cuántas páginas
+    // tiene el capítulo en curso (el registro de avance ya traía el resto).
+    rec.title = manga.title || rec.title;
+    rec.cover = manga.cover ?? rec.cover;
+    rec.lastTotal = total;
     rec.updatedAt = Date.now();
     await idb.putProgress(rec);
   };
@@ -481,6 +677,8 @@ function refreshDlButtons() {
       btn.title = 'Descargar para leer sin conexión';
       row.classList.remove('downloaded');
     }
+    const expBtn = row.querySelector('.exp-btn');
+    if (expBtn) expBtn.hidden = !state.downloaded.has(key);
   });
 }
 
@@ -581,7 +779,12 @@ async function openManga(mangaStub, opts = {}) {
   let m = null;
   let fromSnapshot = false;
   try {
-    m = await call({ type: 'update', sourceId: state.currentSource, manga: mangaStub });
+    // Si el stub viene «mínimo» (desde la biblioteca: {key,title,cover}),
+    // el update se intenta con el snapshot, que sí es un Manga completo;
+    // con el stub mínimo encManga estalla antes de salir al aire.
+    const updateInput = (mangaStub && mangaStub.status !== undefined)
+      ? mangaStub : (opts.snapshot || mangaStub);
+    m = await call({ type: 'update', sourceId: state.currentSource, manga: updateInput });
   } catch (err) {
     if (opts.snapshot) {
       m = opts.snapshot;
@@ -604,6 +807,11 @@ async function openManga(mangaStub, opts = {}) {
       libRec.snapshot = m;
       libRec.title = m.title;
       libRec.cover = m.cover;
+      // Abrir el detalle marca las novedades como vistas: el «conocido»
+      // pasa a ser la lista recién traída y la insignia +N se limpia.
+      libRec.knownChapterCount = state.currentChapters.length;
+      libRec.knownLatestChapterKey = state.currentChapters[0]?.key ?? null;
+      libRec.newChapters = 0;
       await idb.putLibrary(libRec);
       renderLibrary();
     }
@@ -789,7 +997,7 @@ function chapterRow(m, ch, prog) {
   row.innerHTML = `
     <span class="ch-main"><span>${esc(label)}</span>
     <small>${esc(row.dataset.smallBase)} ${esc(progressMarkOf(cp))}</small></span>
-    ${ch.locked ? '' : '<button type="button" class="dl-btn" title="Descargar para leer sin conexión">⬇</button>'}`;
+    ${ch.locked ? '' : '<span class="ch-actions"><button type="button" class="exp-btn" title="Exportar el capítulo descargado como archivo CBZ" hidden>CBZ</button><button type="button" class="dl-btn" title="Descargar para leer sin conexión">⬇</button></span>'}`;
   if (!ch.locked) {
     row.addEventListener('click', () => openChapter(m, ch, label));
     const dlBtn = row.querySelector('.dl-btn');
@@ -806,6 +1014,11 @@ function chapterRow(m, ch, prog) {
       } catch (err) {
         toast(`Descarga fallida: ${err.message}`, true);
       }
+    });
+    const expBtn = row.querySelector('.exp-btn');
+    expBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try { await exportCbz(m, ch); } catch (err) { toast(`Exportación fallida: ${err.message}`, true); }
     });
   }
   return row;
@@ -841,6 +1054,241 @@ async function renderChapters(m, prog) {
   }
   for (const ch of page.chapters) box.appendChild(chapterRow(m, ch, prog));
   refreshDlButtons();
+}
+
+// Descarga de un blob generado en la página (CBZ, respaldo) vía un <a download>.
+function saveBlobAs(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 8000);
+}
+
+// --- Ir a un capítulo por número ----------------------------------------------
+// Salta la paginación a la página donde vive el capítulo pedido (por
+// chapter_number; si el número exacto no existe, al más cercano de la lista)
+// y lo resalta unos segundos.
+function gotoChapterNumber(n) {
+  if (!state.currentManga || !Number.isFinite(n)) return;
+  let best = null;
+  let bestDist = Infinity;
+  for (const ch of orderedChapters()) {
+    if (ch.chapter_number == null) continue;
+    const d = Math.abs(ch.chapter_number - n);
+    if (d < bestDist) { bestDist = d; best = ch; }
+  }
+  if (!best) { toast('Ningún capítulo de la lista trae número', true); return; }
+  const pi = chapterListPageOf(best.key);
+  if (pi < 0) return;
+  state.chapterPage = pi;
+  renderChapters(state.currentManga).then(() => {
+    const row = [...document.querySelectorAll('#chapters .chapter')]
+      .find((r) => r.dataset.chapterKey === best.key);
+    if (row) {
+      row.classList.add('highlight');
+      row.scrollIntoView({ block: 'center' });
+      setTimeout(() => row.classList.remove('highlight'), 3000);
+    }
+  }).catch(() => {});
+  if (best.chapter_number !== n) {
+    toast(`No hay cap. ${n}: te llevo al más cercano (cap. ${best.chapter_number})`);
+  }
+}
+
+// --- Descarga por rango ---------------------------------------------------------
+// Cola secuencial de capítulos entre dos números (inclusive) reutilizando
+// downloadChapter: misma tienda offline, misma limpieza a medias. Cancelable
+// entre capítulos (el que esté en curso termina su descarga).
+const rangeJob = { running: false, cancel: false };
+function updateRangeUi(done, total, note = '') {
+  const el = $('#range-progress');
+  if (el) el.textContent = rangeJob.running ? `Descargando rango… ${done}/${total}` : note;
+  const go = $('#btn-range-go');
+  if (go) go.disabled = rangeJob.running;
+  const cancel = $('#btn-range-cancel');
+  if (cancel) cancel.hidden = !rangeJob.running;
+}
+async function downloadRange(from, to) {
+  const m = state.currentManga;
+  const sourceId = state.currentSource;
+  if (!m || rangeJob.running) return;
+  const targets = state.currentChapters
+    .filter((ch) => !ch.locked && ch.chapter_number != null
+      && ch.chapter_number >= from && ch.chapter_number <= to)
+    .sort((a, b) => a.chapter_number - b.chapter_number);
+  if (!targets.length) {
+    toast('Ese rango no trae capítulos descargables', true);
+    return;
+  }
+  rangeJob.running = true;
+  rangeJob.cancel = false;
+  updateRangeUi(0, targets.length);
+  let done = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (const ch of targets) {
+    if (rangeJob.cancel) break;
+    try {
+      const r = await downloadChapter(sourceId, m, ch);
+      if (r === 'done') done++; else skipped++;
+    } catch { failed++; }
+    updateRangeUi(done + skipped + failed, targets.length);
+  }
+  rangeJob.running = false;
+  const note = rangeJob.cancel
+    ? `Rango cancelado: ${done} capítulo(s) quedaron descargados`
+    : `Rango terminado: ${done} descargado(s), ${skipped} ya estaban, ${failed} con error`;
+  updateRangeUi(0, 0, note);
+  toast(note, failed > 0 && !rangeJob.cancel);
+  refreshDlButtons();
+}
+
+// --- Exportación a CBZ ------------------------------------------------------------
+// Escritor ZIP mínimo (método 0, «stored»): las páginas ya vienen comprimidas
+// (JPEG/PNG/WebP), así que empaquetarlas sin recomprimir es lo correcto y no
+// necesita dependencias.
+const CRC_TABLE = (() => {
+  const t = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c;
+  }
+  return t;
+})();
+function crc32(data) {
+  let c = -1;
+  for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ -1) >>> 0;
+}
+function zipStore(files) {
+  const enc = new TextEncoder();
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name);
+    const crc = crc32(f.data);
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true);
+    local.setUint16(4, 20, true);
+    local.setUint16(6, 0x0800, true); // nombres UTF-8
+    local.setUint16(8, 0, true);      // método: stored
+    local.setUint16(10, 0, true);      // hora DOS 00:00
+    local.setUint16(12, 0x21, true);   // fecha DOS 1980-01-01
+    local.setUint32(14, crc, true);
+    local.setUint32(18, f.data.length, true);
+    local.setUint32(22, f.data.length, true);
+    local.setUint16(26, name.length, true);
+    chunks.push(new Uint8Array(local.buffer), name, f.data);
+    const cen = new DataView(new ArrayBuffer(46));
+    cen.setUint32(0, 0x02014b50, true);
+    cen.setUint16(4, 20, true);
+    cen.setUint16(6, 20, true);
+    cen.setUint16(8, 0x0800, true);
+    cen.setUint16(10, 0, true);
+    cen.setUint16(12, 0, true);
+    cen.setUint16(14, 0x21, true);
+    cen.setUint32(16, crc, true);
+    cen.setUint32(20, f.data.length, true);
+    cen.setUint32(24, f.data.length, true);
+    cen.setUint16(28, name.length, true);
+    cen.setUint32(42, offset, true);
+    central.push(new Uint8Array(cen.buffer), name);
+    offset += 30 + name.length + f.data.length;
+  }
+  const centralStart = offset;
+  let centralSize = 0;
+  for (const c of central) { chunks.push(c); centralSize += c.length; }
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, files.length, true);
+  end.setUint16(10, files.length, true);
+  end.setUint32(12, centralSize, true);
+  end.setUint32(16, centralStart, true);
+  chunks.push(new Uint8Array(end.buffer));
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let pos = 0;
+  for (const c of chunks) { out.set(c, pos); pos += c.length; }
+  return out;
+}
+
+async function exportCbz(manga, chapter) {
+  const key = dlKeyOf(state.currentSource, manga.key, chapter.key);
+  const recs = await idb.getPagesOf(key); // ordenadas por índice (clave con ceros)
+  if (!recs.length) throw new Error('Ese capítulo no está descargado en este dispositivo');
+  const files = [];
+  for (let i = 0; i < recs.length; i++) {
+    const blob = recs[i].blob;
+    const ext = ((blob.type || '').split('/')[1] || 'jpg').replace('jpeg', 'jpg').replace('svg+xml', 'svg');
+    files.push({
+      name: `${String(i + 1).padStart(4, '0')}.${ext}`,
+      data: new Uint8Array(await blob.arrayBuffer()),
+    });
+  }
+  const safe = (s) => String(s || '').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'capitulo';
+  const name = `${safe(manga.title)} - ${safe(chapterLabelOf(chapter))}.cbz`;
+  saveBlobAs(new Blob([zipStore(files)], { type: 'application/vnd.comicbook+zip' }), name);
+  toast(`CBZ exportado: ${name} (${files.length} páginas)`);
+}
+
+// --- Tema del lector ---------------------------------------------------------
+// Fondo de la vista de lectura (Ajustes → «Fondo del lector»): una clase
+// sobre #view-reader que styles.css traduce a colores en ambos modos.
+function applyReaderBg() {
+  const section = document.getElementById('view-reader');
+  if (!section) return;
+  section.classList.remove('bg-negro', 'bg-papel', 'bg-blanco');
+  section.classList.add(`bg-${pref.readerBg()}`);
+}
+
+// --- Respaldo ------------------------------------------------------------------
+// Exporta/importa biblioteca (con favoritos), avance y ajustes en un JSON.
+// Las descargas y las fuentes instaladas NO viajan: pesan demasiado o se
+// reinstalan desde el catálogo.
+const BACKUP_PREF_KEYS = [
+  'tinta.proxyBase', 'tinta.readerMode', 'tinta.pageDir', 'tinta.pageFit',
+  'tinta.chapterOrder', 'tinta.preloadCount', 'tinta.readerBg',
+];
+async function exportBackup() {
+  const prefs = {};
+  for (const k of BACKUP_PREF_KEYS) {
+    const v = localStorage.getItem(k);
+    if (v != null) prefs[k] = v;
+  }
+  const data = {
+    app: 'tinta',
+    kind: 'backup',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    appVersion: APP_VERSION,
+    library: await idb.allLibrary(),
+    progress: await idb.allProgress(),
+    prefs,
+  };
+  const name = `tinta-respaldo-${new Date().toISOString().slice(0, 10)}.json`;
+  saveBlobAs(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), name);
+  toast(`Respaldo exportado: ${name}`);
+}
+async function importBackup(file) {
+  const data = JSON.parse(await file.text());
+  if (!data || data.app !== 'tinta' || !Array.isArray(data.library) || !Array.isArray(data.progress)) {
+    throw new Error('Ese archivo no es un respaldo de Tinta');
+  }
+  for (const rec of data.library) await idb.putLibrary(rec);
+  for (const rec of data.progress) await idb.putProgress(rec);
+  if (data.prefs) {
+    for (const [k, v] of Object.entries(data.prefs)) {
+      if (BACKUP_PREF_KEYS.includes(k) && typeof v === 'string') localStorage.setItem(k, v);
+    }
+  }
+  applyReaderBg();
+  await renderLibrary();
+  toast(`Respaldo importado: ${data.library.length} en biblioteca, ${data.progress.length} con avance`);
 }
 
 // --- Lector ---------------------------------------------------------------------
@@ -1001,6 +1449,7 @@ let scrollObserver = null;
 function renderReader() {
   const r = state.reader;
   if (!r) return;
+  applyReaderBg();
   const box = $('#pages');
   const mode = pref.readerMode();
   box.className = 'pages' + (mode === 'paged' ? ' paged' : '');
@@ -1186,7 +1635,7 @@ document.addEventListener('click', async (e) => {
     toast(err.message, true);
     if (installId) renderCatalog($('#catalog-filter').value);
   }
-  if (e.target.closest('[data-back]')) show('view-sources');
+  if (e.target.closest('[data-back]')) { show('view-sources'); renderLibrary().catch(() => {}); }
   if (e.target.closest('[data-back-browse]')) show('view-browse');
   if (e.target.closest('[data-back-manga]')) {
     const wasLocal = state.reader?.local;
@@ -1207,7 +1656,63 @@ document.addEventListener('click', async (e) => {
   }
 });
 
-$('#brand').addEventListener('click', () => show('view-sources'));
+$('#brand').addEventListener('click', () => { show('view-sources'); renderLibrary().catch(() => {}); });
+
+$('#global-search-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const q = $('#global-search-input').value.trim();
+  if (!q) return;
+  try { await runGlobalSearch(q); } catch (err) { toast(err.message, true); }
+});
+
+$('#btn-check-updates').addEventListener('click', async () => {
+  try { await checkForUpdates({ manual: true }); } catch (err) { toast(err.message, true); }
+});
+
+$('#goto-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const n = parseFloat($('#goto-input').value);
+  if (Number.isFinite(n)) gotoChapterNumber(n);
+});
+
+$('#btn-range').addEventListener('click', () => {
+  const panel = $('#range-panel');
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden && state.currentChapters.length) {
+    // Sugerencia inicial: los primeros capítulos sin descargar de la serie.
+    const nums = state.currentChapters
+      .filter((c) => c.chapter_number != null)
+      .map((c) => c.chapter_number)
+      .sort((a, b) => a - b);
+    if (nums.length && !$('#range-from').value) {
+      $('#range-from').value = nums[0];
+      $('#range-to').value = nums[Math.min(1, nums.length - 1)];
+    }
+  }
+});
+
+$('#btn-range-go').addEventListener('click', () => {
+  const from = parseFloat($('#range-from').value);
+  const to = parseFloat($('#range-to').value);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) {
+    toast('Revisa el rango: «hasta» debe ser mayor o igual que «desde»', true);
+    return;
+  }
+  downloadRange(from, to).catch((err) => toast(err.message, true));
+});
+
+$('#btn-range-cancel').addEventListener('click', () => { rangeJob.cancel = true; });
+
+$('#btn-backup-export').addEventListener('click', () => {
+  exportBackup().catch((err) => toast(`Respaldo fallido: ${err.message}`, true));
+});
+
+$('#backup-file').addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  if (!file) return;
+  try { await importBackup(file); } catch (err) { toast(`Respaldo no importado: ${err.message}`, true); }
+});
 
 $('#btn-order').addEventListener('click', () => {
   setChapterOrder(pref.chapterOrder() === 'asc' ? 'desc' : 'asc');
@@ -1294,6 +1799,8 @@ function bindPrefSelect(selId, key, { def, apply } = {}) {
     apply: () => { syncFitUi(); if (state.reader && pref.readerMode() === 'paged') paintPaged(); },
   });
   bindPrefSelect('#set-preload', 'tinta.preloadCount', { def: '1' });
+  bindPrefSelect('#set-reader-bg', 'tinta.readerBg', { def: 'negro', apply: () => applyReaderBg() });
+  applyReaderBg();
   // Orden de capítulos: el <select> de Ajustes y el botón de la lista comparten
   // setChapterOrder (persiste, reinicia la paginación y re-pinta si hay manga).
   const ordSel = $('#set-chapter-order');
@@ -1344,6 +1851,15 @@ function bindPrefSelect(selId, key, { def, apply } = {}) {
   const existingDownloads = await idb.allDownloads().catch(() => []);
   state.downloaded = new Set(existingDownloads.map((d) => d.key));
   await renderLibrary();
+  // Chequeo de novedades automático: como máximo una vez al día y solo si
+  // hay biblioteca que revisar; corre en segundo plano, sin bloquear el
+  // arranque, y sus fallos se tragan (cada serie ya tolera los suyos).
+  const lastCheck = parseInt(localStorage.getItem('tinta.lastUpdateCheck') || '0', 10);
+  if (Date.now() - lastCheck > 24 * 3600 * 1000) {
+    idb.allLibrary().then((lib) => {
+      if (lib.length) checkForUpdates({ manual: false }).catch(() => {});
+    }).catch(() => {});
+  }
   bootStatus('Cargando catálogo…');
   try {
     const res = await fetch(CATALOG_BASE + 'index.min.json');
