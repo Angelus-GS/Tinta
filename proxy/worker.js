@@ -17,6 +17,7 @@ const ALLOWLIST = [
   'temp.compsci88.com',    // CDN de portadas y paginas de Weeb Central
   'planeptune.us',         // CDN de grupos de scanlation en Weeb Central (p. ej. scans-hot)
   'lowee.us',              // CDN "official" de Weeb Central (p. ej. official.lowee.us, Spy x Family)
+  'tokyo-cdn.com',         // MANGA Plus: API (jumpg-webapi) y páginas (jumpg-assets*)
   'aidoku-community.github.io',
 ];
 
