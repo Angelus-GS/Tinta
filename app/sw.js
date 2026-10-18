@@ -38,3 +38,5 @@ self.addEventListener('fetch', (e) => {
     })),
   );
 });
+
+/* Tinta v1.8.0 — ronda 4 */
