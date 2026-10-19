@@ -9,7 +9,7 @@ window.__tintaBooted = false;
 // Versión visible de la app: súbela (y la cache del SW) en cada publicación.
 // El host reporta la suya (HOST_BUILD en worker-src.js); si difieren, la
 // actualización llegó a medias a este dispositivo.
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '1.9.1';
 
 const CATALOG_BASE = 'https://aidoku-community.github.io/sources/';
 const ANCHORS = ['multi.mangadex', 'en.weebcentral'];
@@ -246,8 +246,9 @@ async function openFromContinue(p) {
   }
   state.currentSource = p.sourceId;
   // Con registro en biblioteca se entra por su snapshot (Manga completo,
-  // re-serializable); sin registro solo queda el stub mínimo y el detalle
-  // puede no cargar capítulos frescos (límite conocido del stub).
+  // re-serializable); sin registro, openManga completa el stub mínimo
+  // (key/título/portada) y la fuente re-trae el detalle entero con sus
+  // capítulos frescos.
   const libRec = await idb.getLibrary(p.key);
   if (libRec) await openManga(libRec.stub, { snapshot: libRec.snapshot });
   else await openManga({ key: p.mangaKey, title: p.title, cover: p.cover });
@@ -477,8 +478,10 @@ async function checkForUpdates({ manual = false } = {}) {
         // El update necesita el Manga COMPLETO (encManga exige campos
         // numéricos no opcionales: status, content_rating, viewer…): el
         // stub guardado {key,title,cover} no basta y el codec estalla con
-        // «Cannot convert undefined to a BigInt». El snapshot sí es completo.
-        const m = await call({ type: 'update', sourceId: rec.sourceId, manga: rec.snapshot || rec.stub });
+        // «Cannot convert undefined to a BigInt». El snapshot sí es
+        // completo; un registro viejo sin snapshot entra completado con
+        // completeMangaInput (la fuente re-trae todo desde la key).
+        const m = await call({ type: 'update', sourceId: rec.sourceId, manga: rec.snapshot || completeMangaInput(rec.stub) });
         const chapters = m.chapters || [];
         const known = rec.knownChapterCount;
         if (known == null) {
@@ -810,6 +813,36 @@ async function runListing(page, append) {
 }
 
 // --- Detalle y capítulos -------------------------------------------------------
+
+// encManga (app/lib/types.js) exige un Manga serializable completo: los
+// numéricos no opcionales (status, content_rating, viewer,
+// update_strategy) van como varint y un undefined revienta en BigInt().
+// Un stub mínimo {key,title,cover} — el que guardan biblioteca y avance —
+// no basta por sí solo. completeMangaInput lo rellena campo a campo: la
+// fuente solo necesita la key para re-traer el detalle entero, así que
+// cualquier stub parcial sirve como entrada del update una vez completado.
+// Un undefined explícito del stub nunca pisa un valor por defecto.
+function completeMangaInput(stub) {
+  const s = stub || {};
+  const out = {
+    key: s.key,
+    title: s.title ?? '',
+    cover: s.cover ?? null,
+    artists: s.artists ?? null,
+    authors: s.authors ?? null,
+    description: s.description ?? null,
+    url: s.url ?? null,
+    tags: s.tags ?? null,
+    status: s.status ?? 0,
+    content_rating: s.content_rating ?? 0,
+    viewer: s.viewer ?? 0,
+    update_strategy: s.update_strategy ?? 0,
+    next_update_time: s.next_update_time ?? null,
+    chapters: s.chapters ?? null,
+  };
+  return out;
+}
+
 async function openManga(mangaStub, opts = {}) {
   show('view-manga');
   $('#manga-detail').innerHTML = '<p class="hint">Cargando detalle y capítulos…</p>';
@@ -817,11 +850,14 @@ async function openManga(mangaStub, opts = {}) {
   let m = null;
   let fromSnapshot = false;
   try {
-    // Si el stub viene «mínimo» (desde la biblioteca: {key,title,cover}),
-    // el update se intenta con el snapshot, que sí es un Manga completo;
-    // con el stub mínimo encManga estalla antes de salir al aire.
+    // El update exige un Manga serializable completo (encManga): si el
+    // stub viene «mínimo» ({key,title,cover}) y hay snapshot, manda el
+    // snapshot; sin snapshot, el stub se COMPLETA con valores por defecto
+    // (completeMangaInput) — la fuente solo necesita la key para re-traer
+    // todo. Antes ese camino dejaba pasar el stub desnudo y encManga
+    // estallaba con «Cannot convert undefined to a BigInt» (hotfix v1.9.1).
     const updateInput = (mangaStub && mangaStub.status !== undefined)
-      ? mangaStub : (opts.snapshot || mangaStub);
+      ? mangaStub : (opts.snapshot || completeMangaInput(mangaStub));
     m = await call({ type: 'update', sourceId: state.currentSource, manga: updateInput });
   } catch (err) {
     if (opts.snapshot) {
