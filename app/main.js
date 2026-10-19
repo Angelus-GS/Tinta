@@ -9,7 +9,7 @@ window.__tintaBooted = false;
 // Versión visible de la app: súbela (y la cache del SW) en cada publicación.
 // El host reporta la suya (HOST_BUILD en worker-src.js); si difieren, la
 // actualización llegó a medias a este dispositivo.
-const APP_VERSION = '1.8.1';
+const APP_VERSION = '1.9.0';
 
 const CATALOG_BASE = 'https://aidoku-community.github.io/sources/';
 const ANCHORS = ['multi.mangadex', 'en.weebcentral'];
@@ -20,6 +20,12 @@ const pref = {
   readerMode: () => localStorage.getItem('tinta.readerMode') || 'scroll',
   pageDir: () => localStorage.getItem('tinta.pageDir') || 'ltr',
   pageFit: () => localStorage.getItem('tinta.pageFit') || 'ajustar',
+  // Recorte de márgenes (Ronda 5): apagado por defecto; 'on' detecta el
+  // borde uniforme de cada página y lo recorta al presentarla.
+  trimMargins: () => localStorage.getItem('tinta.trimMargins') === 'on',
+  // Páginas dobles (Ronda 5): encendido por defecto; en horizontal y modo
+  // por páginas se muestran dos páginas lado a lado como un solo paso.
+  spreads: () => localStorage.getItem('tinta.spreads') !== 'off',
   // Orden de la lista de capítulos: 'asc' = del más viejo al más nuevo
   // (defecto, como pidió el usuario) · 'desc' = del más nuevo al más viejo.
   chapterOrder: () => localStorage.getItem('tinta.chapterOrder') || 'asc',
@@ -1288,6 +1294,7 @@ function applyReaderBg() {
 const BACKUP_PREF_KEYS = [
   'tinta.proxyBase', 'tinta.readerMode', 'tinta.pageDir', 'tinta.pageFit',
   'tinta.chapterOrder', 'tinta.preloadCount', 'tinta.readerBg',
+  'tinta.trimMargins', 'tinta.spreads',
 ];
 async function exportBackup() {
   const prefs = {};
@@ -1479,6 +1486,23 @@ function cycleFit() {
   toast(next === 'llenar' ? 'Encuadre: llenar pantalla (recorta)' : 'Encuadre: ajustar (página completa)');
 }
 
+function syncTrimUi() {
+  const on = pref.trimMargins();
+  const btn = $('#btn-rc-trim');
+  if (btn) btn.textContent = `Recorte: ${on ? 'Sí' : 'No'}`;
+  const sel = $('#set-trim-margins');
+  const val = on ? 'on' : 'off';
+  if (sel && sel.value !== val) sel.value = val;
+}
+
+function cycleTrim() {
+  const next = pref.trimMargins() ? 'off' : 'on';
+  localStorage.setItem('tinta.trimMargins', next);
+  syncTrimUi();
+  if (state.reader && pref.readerMode() === 'paged') paintPaged();
+  toast(next === 'on' ? 'Recorte de márgenes activado' : 'Recorte de márgenes desactivado');
+}
+
 let scrollObserver = null;
 
 function renderReader() {
@@ -1491,11 +1515,13 @@ function renderReader() {
   setImmersive(mode === 'paged');
   syncModeUi();
   syncFitUi();
+  syncTrimUi();
   setReaderControlsVisible(false);
   const rcTitle = $('#rc-title');
   if (rcTitle) rcTitle.textContent = r.local ? r.manga.title : `${r.manga.title} — ${r.label}`;
   if (scrollObserver) { scrollObserver.disconnect(); scrollObserver = null; }
   box.innerHTML = '';
+  r.viewEnd = r.idx; // paintPaged lo fija en serio; en scroll vale el ancla
   if (mode === 'paged') {
     const stage = document.createElement('div');
     stage.className = 'paged-stage';
@@ -1554,21 +1580,324 @@ function renderReader() {
 // (2) pintar sin revelar hasta el `load` de la página nueva, dejando la
 // anterior visible mientras tanto. Si la pedida ya estaba precargada, el
 // cambio es instantáneo y no espera red.
-function preloadPagedAround(r, idx) {
+// La precarga cubre la vista visible (1 o 2 páginas), las 3 siguientes a la
+// vista y las 2 anteriores a su inicio; al cargar, cada imagen deja anotado
+// su aspecto (lo necesitan los desplegados para detectar panorámicas).
+function preloadPagedAround(r, view) {
   if (!r.preload) r.preload = new Map();
-  for (const i of [idx + 1, idx + 2, idx + 3, idx - 1]) {
+  const s = view ? view.start : r.idx;
+  const e = view ? view.end : r.idx;
+  for (const i of [e + 1, e + 2, e + 3, s - 1, s - 2]) {
     if (i < 0 || i >= r.items.length || r.preload.has(i)) continue;
     const item = r.items[i];
     const img = new Image();
     const entry = { img, loaded: false };
     r.preload.set(i, entry);
-    img.addEventListener('load', () => { entry.loaded = true; });
+    img.addEventListener('load', () => {
+      entry.loaded = true;
+      if (img.naturalWidth) {
+        noteAspect(r, i, img.naturalWidth / img.naturalHeight);
+        ensureTrimDetection(r, i); // la caja queda lista antes de ver la página
+        maybeRepaintForAspects(r);
+      }
+    });
     img.addEventListener('error', () => {
       if (item.original && img.src !== item.original) img.src = item.original;
     });
     img.src = item.src;
-    if (img.complete && img.naturalWidth > 0) entry.loaded = true;
+    if (img.complete && img.naturalWidth > 0) {
+      entry.loaded = true;
+      noteAspect(r, i, img.naturalWidth / img.naturalHeight);
+    }
   }
+}
+
+// --- Aspectos y vistas (páginas sencillas y desplegados) ----------------------
+// r.idx es siempre el ANCLA: la primera página visible en orden de lectura.
+// Sin desplegados, cada vista es una página. Con desplegados (preferencia +
+// horizontal), las vistas se calculan voraces desde el capítulo: una página
+// panorámica (ancho/alto ≥ 1.2, ya es un desplegado ella sola) va sola y no
+// se empareja; las demás se emparejan de dos en dos. El aspecto de una
+// página solo se conoce cuando su imagen cargó (precarga o pintado); la
+// desconocida se trata como normal y la vista se corrige al conocerla.
+const PANO_ASPECT = 1.2;
+
+function noteAspect(r, i, a) {
+  if (!r.aspects) r.aspects = new Map();
+  if (!r.aspects.has(i)) {
+    r.aspects.set(i, a);
+    r.aspectsVersion = (r.aspectsVersion || 0) + 1;
+  }
+}
+function pageAspect(r, i) {
+  if (r.aspects?.has(i)) return r.aspects.get(i);
+  const img = r.preload?.get(i)?.img;
+  if (img && img.naturalWidth) {
+    const a = img.naturalWidth / img.naturalHeight;
+    noteAspect(r, i, a);
+    return a;
+  }
+  return null;
+}
+function isPano(r, i) {
+  const a = pageAspect(r, i);
+  return a !== null && a >= PANO_ASPECT;
+}
+function spreadOn() {
+  return pref.spreads() && window.innerWidth > window.innerHeight;
+}
+function viewStarts(r) {
+  const n = r.items.length;
+  const starts = [];
+  if (!spreadOn()) {
+    for (let i = 0; i < n; i++) starts.push(i);
+    return starts;
+  }
+  let i = 0;
+  while (i < n) {
+    starts.push(i);
+    if (isPano(r, i) || i === n - 1) i += 1;
+    else if (isPano(r, i + 1)) i += 1; // la siguiente es desplegado: esta va sola
+    else i += 2;
+  }
+  return starts;
+}
+function currentView(r) {
+  const starts = viewStarts(r);
+  let pos = 0;
+  for (let k = 0; k < starts.length; k++) {
+    if (starts[k] <= r.idx) pos = k;
+    else break;
+  }
+  const start = starts[pos];
+  const end = (pos + 1 < starts.length ? starts[pos + 1] : r.items.length) - 1;
+  const pages = [];
+  for (let i = start; i <= end; i++) pages.push(i);
+  return { start, end, pages };
+}
+// Si al aterrizar un aspecto nuevo la vista pintada dejara de ser la
+// correcta (p. ej. la segunda del par resultó panorámica), se repinta.
+function maybeRepaintForAspects(r) {
+  if (state.reader !== r || pref.readerMode() !== 'paged' || !r.paintedView) return;
+  const v = currentView(r);
+  const p = r.paintedView;
+  if (v.start !== p.start || v.pages.length !== p.pages.length) paintPaged();
+}
+
+// --- Recorte de márgenes (Ronda 5) ---------------------------------------------
+// Detección por página a baja resolución en un canvas. OJO: el <img>
+// visible se cargó SIN CORS, así que dibujarlo contaminaría el canvas; la
+// detección usa una sonda aparte con crossOrigin='anonymous' (las
+// imágenes vía proxy traen ACAO * y las descargadas son blobs locales:
+// la sonda lee sin contaminar; si el origen no da CORS, la sonda falla y
+// esa página se queda sin recorte, sin error). El color del borde se
+// infiere de 8 parches perimetrales (mediana robusta: un número de
+// página en una esquina no veta la detección); sin acuerdo mayoritario
+// no hay conclusión. Se recortan las filas/columnas
+// uniformes de ese color (≥97% de píxeles dentro de tolerancia), con
+// tope del 40% por lado. La caja se cachea en memoria por URL de página
+// (null = no concluyente o ilegible, no se reintenta). La sonda se
+// dispara al precargar cada vecina: al avanzar, la caja ya está lista y
+// el recorte se aplica en el acto, sin esperas.
+const trimCache = new Map();
+const trimPending = new Set();
+const TRIM_MAX = 0.40;
+
+function ensureTrimDetection(r, i) {
+  if (!pref.trimMargins()) return;
+  const item = r.items[i];
+  const src = item && item.src;
+  if (!src || trimCache.has(src) || trimPending.has(src)) return;
+  trimPending.add(src);
+  const probe = new Image();
+  probe.crossOrigin = 'anonymous';
+  probe.addEventListener('load', () => {
+    trimPending.delete(src);
+    trimCache.set(src, computeTrimBox(probe));
+    // Si la página sigue visible y aún sin recortar, se aplica ahora.
+    if (state.reader === r && pref.readerMode() === 'paged') {
+      const slot = document.querySelector(
+        `#pages .paged-stage .page-row:not(.row-wait) .page-slot[data-idx="${i}"]`);
+      const img = slot?.querySelector('img.page-img');
+      if (slot && img && !slot.querySelector('.trim-box')) applyTrim(slot, img);
+    }
+  });
+  probe.addEventListener('error', () => {
+    trimPending.delete(src);
+    trimCache.set(src, null);
+  });
+  probe.src = src;
+}
+
+function computeTrimBox(img) {
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  if (!w || !h || !img.complete) return null;
+  const scale = Math.min(1, 220 / Math.max(w, h));
+  const cw = Math.max(8, Math.round(w * scale));
+  const ch = Math.max(8, Math.round(h * scale));
+  let data;
+  try {
+    const cv = document.createElement('canvas');
+    cv.width = cw;
+    cv.height = ch;
+    const cx = cv.getContext('2d', { willReadFrequently: true });
+    cx.drawImage(img, 0, 0, cw, ch);
+    data = cx.getImageData(0, 0, cw, ch).data;
+  } catch { return null; }
+  const px = (x, y) => {
+    const o = (y * cw + x) * 4;
+    return [data[o], data[o + 1], data[o + 2]];
+  };
+  const patchAvg = (xs, ys) => {
+    let r = 0; let g = 0; let b = 0; let n = 0;
+    for (const y of ys) for (const x of xs) {
+      const [pr, pg, pb] = px(x, y);
+      r += pr; g += pg; b += pb; n++;
+    }
+    return [r / n, g / n, b / n];
+  };
+  const lo = [0, 1, 2];
+  const hiX = [cw - 3, cw - 2, cw - 1].filter((v) => v >= 0);
+  const hiY = [ch - 3, ch - 2, ch - 1].filter((v) => v >= 0);
+  const midX = [Math.floor(cw / 2) - 1, Math.floor(cw / 2), Math.floor(cw / 2) + 1]
+    .filter((v) => v >= 0 && v < cw);
+  const midY = [Math.floor(ch / 2) - 1, Math.floor(ch / 2), Math.floor(ch / 2) + 1]
+    .filter((v) => v >= 0 && v < ch);
+  // Ocho parches: las 4 esquinas y los puntos medios de los 4 lados. El
+  // color de borde es la MEDIANA de los parches (un número de página o un
+  // crédito impreso en una esquina queda como valor atípico y no contamina
+  // la estimación); hacen falta ≥5 parches de acuerdo para concluir.
+  const patches = [
+    patchAvg(lo, lo), patchAvg(hiX, lo), patchAvg(lo, hiY), patchAvg(hiX, hiY),
+    patchAvg(midX, lo), patchAvg(midX, hiY), patchAvg(lo, midY), patchAvg(hiX, midY),
+  ];
+  const median = (vals) => {
+    const s = vals.slice().sort((a, b) => a - b);
+    return (s[3] + s[4]) / 2;
+  };
+  const bg = [0, 1, 2].map((c) => median(patches.map((p) => p[c])));
+  const agree = patches.filter((p) => Math.max(
+    Math.abs(p[0] - bg[0]), Math.abs(p[1] - bg[1]), Math.abs(p[2] - bg[2]),
+  ) <= 42).length;
+  if (agree < 5) return null; // sin acuerdo de borde: no concluyente
+  const TOL = 26;
+  const isBg = (x, y) => {
+    const [r, g, b] = px(x, y);
+    return Math.abs(r - bg[0]) <= TOL && Math.abs(g - bg[1]) <= TOL && Math.abs(b - bg[2]) <= TOL;
+  };
+  const rowBg = (y) => {
+    let n = 0;
+    for (let x = 0; x < cw; x++) if (isBg(x, y)) n++;
+    return n >= cw * 0.97;
+  };
+  const colBg = (x) => {
+    let n = 0;
+    for (let y = 0; y < ch; y++) if (isBg(x, y)) n++;
+    return n >= ch * 0.97;
+  };
+  const capRows = Math.floor(ch * TRIM_MAX);
+  const capCols = Math.floor(cw * TRIM_MAX);
+  let t = 0;
+  while (t < capRows && rowBg(t)) t++;
+  let b = 0;
+  while (b < capRows && rowBg(ch - 1 - b)) b++;
+  let l = 0;
+  while (l < capCols && colBg(l)) l++;
+  let rr = 0;
+  while (rr < capCols && colBg(cw - 1 - rr)) rr++;
+  return { l: l / cw, t: t / ch, r: rr / cw, b: b / ch };
+}
+
+// Presentación del recorte, solo CSS/geometría: la región recortada se
+// encuadra en el hueco respetando el encuadre vigente (Ajustar = región
+// completa lo más grande posible; Llenar = la región cubre el hueco) y el
+// <img> se expande dentro de una .trim-box con overflow hidden según las
+// fracciones. La tubería de pintar-al-load no se toca: esto corre cuando
+// la imagen ya cargó, dentro de fillSlot (o al aterrizar su detección).
+function applyTrim(slot, img) {
+  if (!pref.trimMargins()) return;
+  const box = trimCache.get(slot.dataset.src || '');
+  if (box === undefined) return; // aún sin detectar: la sonda aplicará al llegar
+  slot.dataset.trim = box
+    ? `${box.l.toFixed(3)},${box.t.toFixed(3)},${box.r.toFixed(3)},${box.b.toFixed(3)}`
+    : 'null';
+  if (!box) return;
+  const { l, t, r: rr, b } = box;
+  if (l + t + rr + b <= 0.001) return; // identidad: nada que recortar
+  const sw = slot.clientWidth;
+  const sh = slot.clientHeight;
+  if (!sw || !sh) return;
+  const kw = 1 - l - rr;
+  const kh = 1 - t - b;
+  const aspect = (img.naturalWidth * kw) / (img.naturalHeight * kh);
+  let bw;
+  let bh;
+  if (pref.pageFit() === 'llenar') {
+    bw = Math.max(sw, sh * aspect);
+    bh = bw / aspect;
+  } else {
+    bw = Math.min(sw, sh * aspect);
+    bh = bw / aspect;
+  }
+  const wrap = document.createElement('div');
+  wrap.className = 'trim-box';
+  wrap.style.left = `${(sw - bw) / 2}px`;
+  wrap.style.top = `${(sh - bh) / 2}px`;
+  wrap.style.width = `${bw}px`;
+  wrap.style.height = `${bh}px`;
+  img.classList.add('trimmed');
+  img.style.width = `${100 / kw}%`;
+  img.style.height = `${100 / kh}%`;
+  img.style.left = `${-100 * l / kw}%`;
+  img.style.top = `${-100 * t / kh}%`;
+  slot.replaceChild(wrap, img);
+  wrap.appendChild(img);
+}
+
+// Rellena un hueco del escenario con la página i y avisa UNA vez cuando la
+// página está lista para revelarse: adopta el <img> de la precarga si ya
+// bajó (cambio instantáneo, sin red); si no, crea uno y espera su load.
+// Devuelve 1 si quedó pendiente, 0 si se resolvió en el acto.
+function fillSlot(r, slot, i, onReady) {
+  const item = r.items[i];
+  slot.dataset.src = item.src;
+  let done = false;
+  const finish = (img) => {
+    if (done) return;
+    done = true;
+    if (img && img.naturalWidth) noteAspect(r, i, img.naturalWidth / img.naturalHeight);
+    if (img) {
+      applyTrim(slot, img); // con la caja ya cacheada, se aplica en el acto
+      ensureTrimDetection(r, i); // si no, la sonda la traerá y la aplicará
+    }
+    onReady();
+  };
+  const entry = r.preload?.get(i);
+  if (entry && entry.loaded) {
+    r.preload.delete(i);
+    const img = entry.img;
+    img.className = `page-img fit-${pref.pageFit()}`;
+    img.alt = `Página ${i + 1}`;
+    if (item.original) armImgFallback(img, item.original);
+    slot.appendChild(img);
+    finish(img);
+    return 0;
+  }
+  const img = document.createElement('img');
+  img.className = `page-img fit-${pref.pageFit()}`;
+  img.alt = `Página ${i + 1}`;
+  img.addEventListener('load', () => finish(img));
+  img.addEventListener('error', () => {
+    // Sin red de seguridad pendiente (sin original o ya en directo): se
+    // revela lo que haya en vez de dejar el escenario colgado.
+    if (!item.original || img.src === item.original) finish(img);
+  });
+  if (item.original) armImgFallback(img, item.original);
+  slot.appendChild(img);
+  img.src = item.src;
+  if (img.complete && img.naturalWidth > 0) { finish(img); return 0; }
+  return 1;
 }
 
 function setPageLoading(v) {
@@ -1580,54 +1909,61 @@ function paintPaged() {
   const r = state.reader;
   const stage = $('#pages .paged-stage');
   if (!r || !stage) return;
-  const idx = r.idx;
-  const item = r.items[idx];
+  const view = currentView(r);
+  r.idx = view.start;
+  r.viewEnd = view.end;
+  r.paintedView = { start: view.start, pages: view.pages.slice() };
   const token = (r.paintToken = (r.paintToken || 0) + 1);
-  if (r.preload?.get(idx)?.loaded) {
-    // Ya bajó en la precarga: se ADOPTA ese mismo elemento (ya está
-    // `complete`, con su bitmap listo) en vez de crear un <img> nuevo que
-    // tardaría un tick en reportarse cargado. Cambio instantáneo, sin red.
-    const img = r.preload.get(idx).img;
-    r.preload.delete(idx);
-    img.className = `page-img fit-${pref.pageFit()}`;
-    img.alt = `Página ${idx + 1}`;
-    if (item.original) armImgFallback(img, item.original);
-    stage.querySelectorAll('img.page-img').forEach((o) => { if (o !== img) o.remove(); });
-    stage.appendChild(img);
+  const knownAspects = r.aspectsVersion || 0;
+  // La vista anterior se queda visible hasta que la nueva esté completa:
+  // la fila entrante espera invisible (visibility conserva su geometría,
+  // así el recorte puede medir su hueco) y el swap retira a la anterior.
+  // Si todo ya estaba precargado, el cambio es instantáneo y sin red.
+  const row = document.createElement('div');
+  row.className = 'page-row row-wait' + (view.pages.length === 2 ? ' spread' : '');
+  const rtl = pref.pageDir() === 'rtl';
+  // En RTL la primera del par (el ancla) se lee a la derecha.
+  const visual = view.pages.length === 2 && rtl ? [view.pages[1], view.pages[0]] : view.pages;
+  const slots = visual.map((i) => {
+    const slot = document.createElement('div');
+    slot.className = 'page-slot';
+    slot.dataset.idx = i;
+    row.appendChild(slot);
+    return { slot, i };
+  });
+  stage.appendChild(row);
+  let pending = 0;
+  let swapped = false;
+  const swap = () => {
+    if (swapped) return;
+    if (state.reader !== r || r.paintToken !== token) { row.remove(); return; }
+    swapped = true;
+    stage.querySelectorAll('.page-row').forEach((o) => { if (o !== row) o.remove(); });
+    row.classList.remove('row-wait');
     setPageLoading(false);
-  } else {
-    // La página anterior se queda visible hasta que la nueva cargue; la
-    // nueva espera invisible (fuera de flujo) con su indicador discreto.
-    const img = document.createElement('img');
-    img.className = `page-img fit-${pref.pageFit()}`;
-    img.alt = `Página ${idx + 1}`;
-    img.classList.add('pg-wait');
-    const swap = () => {
-      if (state.reader !== r || r.paintToken !== token) { img.remove(); return; }
-      stage.querySelectorAll('img.page-img').forEach((o) => { if (o !== img) o.remove(); });
-      img.classList.remove('pg-wait');
-      setPageLoading(false);
-    };
-    img.addEventListener('load', swap);
-    img.addEventListener('error', () => {
-      // Sin red de seguridad pendiente (sin original o ya en directo): se
-      // revela lo que haya en vez de dejar el escenario colgado.
-      if (!item.original || img.src === item.original) swap();
-    });
-    if (item.original) armImgFallback(img, item.original);
-    stage.appendChild(img);
-    img.src = item.src;
-    if (img.complete && img.naturalWidth > 0) swap();
-    else setPageLoading(true);
+    // Si al cargar se conoció un aspecto que cambia la vista (la segunda
+    // del par era un desplegado, p. ej.), se repinta una sola vez.
+    if ((r.aspectsVersion || 0) !== knownAspects) {
+      const v2 = currentView(r);
+      if (v2.start !== view.start || v2.pages.length !== view.pages.length) paintPaged();
+    }
+  };
+  for (const { slot, i } of slots) {
+    pending += fillSlot(r, slot, i, () => { pending--; if (pending === 0) swap(); });
   }
+  if (pending === 0) swap();
+  else setPageLoading(true);
   updateIndicator();
-  preloadPagedAround(r, idx);
+  preloadPagedAround(r, view);
 }
 
 function updateIndicator() {
   const r = state.reader;
   if (!r) return;
-  const text = `${r.idx + 1} / ${r.items.length}`;
+  const end = pref.readerMode() === 'paged' ? (r.viewEnd ?? r.idx) : r.idx;
+  const text = end > r.idx
+    ? `${r.idx + 1}–${end + 1} / ${r.items.length}`
+    : `${r.idx + 1} / ${r.items.length}`;
   const el = $('#page-indicator');
   if (el) el.textContent = text;
   const rc = $('#rc-indicator');
@@ -1649,12 +1985,21 @@ async function goToPage(i, { quiet = false } = {}) {
   if (!quiet) updateIndicator();
 }
 
-// Avance en orden de lectura (la dirección solo decide qué zona/tecla lo pide)
+// Avance en orden de lectura (la dirección solo decide qué zona/tecla lo
+// pide). Sin desplegados, de página en página; con desplegados, de vista
+// en vista (el ancla salta al inicio de la vista siguiente/anterior).
 function pageStep(delta) {
   const r = state.reader;
   if (!r || pref.readerMode() !== 'paged') return;
-  const next = Math.min(Math.max(0, r.idx + delta), r.items.length - 1);
-  if (next !== r.idx) goToPage(next);
+  if (!spreadOn()) {
+    const next = Math.min(Math.max(0, r.idx + delta), r.items.length - 1);
+    if (next !== r.idx) goToPage(next);
+    return;
+  }
+  const starts = viewStarts(r);
+  const pos = starts.indexOf(currentView(r).start);
+  const np = Math.min(Math.max(0, pos + delta), starts.length - 1);
+  if (starts[np] !== r.idx) goToPage(starts[np]);
 }
 function zoneNav(zone) {
   const rtl = pref.pageDir() === 'rtl';
@@ -1668,6 +2013,19 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowLeft') zoneNav('prev');
   else if (e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); pageStep(1); }
   else if (e.key === 'PageUp') { e.preventDefault(); pageStep(-1); }
+});
+
+// Girar el teléfono (o redimensionar) re-pinta: los desplegados entran o
+// salen según la orientación y el recorte recalcula la geometría del hueco.
+// El ancla no se mueve: en vertical la vista queda en la primera página
+// del par que se estaba viendo.
+let resizeTick = null;
+window.addEventListener('resize', () => {
+  if (!state.reader || pref.readerMode() !== 'paged') return;
+  clearTimeout(resizeTick);
+  resizeTick = setTimeout(() => {
+    if (state.reader && pref.readerMode() === 'paged') paintPaged();
+  }, 120);
 });
 
 // --- CBZ local -------------------------------------------------------------------
@@ -1863,6 +2221,7 @@ function toggleReaderMode() {
 $('#btn-mode').addEventListener('click', toggleReaderMode);
 $('#btn-rc-mode').addEventListener('click', toggleReaderMode);
 $('#btn-rc-fit').addEventListener('click', cycleFit);
+$('#btn-rc-trim').addEventListener('click', cycleTrim);
 
 $('#cbz-file').addEventListener('change', async (e) => {
   const file = e.target.files?.[0];
@@ -1908,6 +2267,15 @@ function bindPrefSelect(selId, key, { def, apply } = {}) {
   });
   bindPrefSelect('#set-preload', 'tinta.preloadCount', { def: '1' });
   bindPrefSelect('#set-reader-bg', 'tinta.readerBg', { def: 'negro', apply: () => applyReaderBg() });
+  bindPrefSelect('#set-trim-margins', 'tinta.trimMargins', {
+    def: 'off',
+    apply: () => { syncTrimUi(); if (state.reader && pref.readerMode() === 'paged') paintPaged(); },
+  });
+  bindPrefSelect('#set-spreads', 'tinta.spreads', {
+    def: 'on',
+    apply: () => { if (state.reader && pref.readerMode() === 'paged') paintPaged(); },
+  });
+  syncTrimUi();
   applyReaderBg();
   // Orden de capítulos: el <select> de Ajustes y el botón de la lista comparten
   // setChapterOrder (persiste, reinicia la paginación y re-pinta si hay manga).
