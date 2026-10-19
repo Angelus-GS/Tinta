@@ -46,6 +46,18 @@
       <option value="llenar">Llenar pantalla (sin bordes, recorta)</option>
     </select>
   </label>
+  <label>Recortar márgenes de página (modo páginas)
+    <select id="set-trim-margins">
+      <option value="off">No (página tal cual)</option>
+      <option value="on">Sí (detecta y recorta el borde uniforme)</option>
+    </select>
+  </label>
+  <label>Páginas dobles al girar el teléfono (modo páginas)
+    <select id="set-spreads">
+      <option value="on">Sí (dos páginas lado a lado en horizontal)</option>
+      <option value="off">No (siempre de una en una)</option>
+    </select>
+  </label>
   <label>Orden de la lista de capítulos
     <select id="set-chapter-order">
       <option value="asc">Del más viejo al más nuevo</option>
@@ -165,6 +177,7 @@
       <span id="rc-title" class="rc-title"></span>
       <span id="rc-indicator" class="pill"></span>
       <button id="btn-rc-fit" class="ghost" type="button">Encuadre: Ajustar</button>
+      <button id="btn-rc-trim" class="ghost" type="button">Recorte: No</button>
       <button id="btn-rc-mode" class="ghost" type="button">Modo: Páginas</button>
     </div>
     <div id="pages" class="pages"></div>
